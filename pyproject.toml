@@ -4,7 +4,13 @@ version = "0.1.0"
 description = "A tiny LLM inference and serving engine, built from scratch in Python + PyTorch"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "huggingface-hub>=1.23.0",
+    "safetensors>=0.8.0",
+    "torch>=2.13.0",
+    "transformers>=5.13.1",
+]
+
 
 [build-system]
 requires = ["uv_build>=0.9.0,<0.10.0"]
