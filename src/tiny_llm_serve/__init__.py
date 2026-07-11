@@ -1,2 +1,1 @@
-def hello() -> str:
-    return "Hello from tiny-llm-serve!"
+__version__ = "0.1.0"
