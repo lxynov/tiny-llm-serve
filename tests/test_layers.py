@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from transformers import Qwen3Config
 from transformers.models.qwen3.modeling_qwen3 import (
+    Qwen3MLP,
     Qwen3RMSNorm,
     Qwen3RotaryEmbedding,
     apply_rotary_pos_emb,
@@ -9,6 +10,7 @@ from transformers.models.qwen3.modeling_qwen3 import (
 
 from tiny_llm_serve.layers.activation import SiluAndMul
 from tiny_llm_serve.layers.layernorm import RMSNorm
+from tiny_llm_serve.layers.linear import MergedLinear
 from tiny_llm_serve.layers.rotary_embedding import RotaryEmbedding
 
 HIDDEN = 32
@@ -102,3 +104,36 @@ def test_silu_and_mul():
 
     torch.testing.assert_close(out, F.silu(gate) * up, atol=1e-6, rtol=0)
     assert out[0, 1] == 0.0
+
+
+def test_merged_linear_matches_separate_projections():
+    torch.manual_seed(0)
+    q_size = NUM_HEADS * HEAD_DIM
+    kv_size = NUM_KV_HEADS * HEAD_DIM
+    w_q = torch.randn(q_size, HIDDEN)
+    w_k = torch.randn(kv_size, HIDDEN)
+    w_v = torch.randn(kv_size, HIDDEN)
+    qkv_proj = MergedLinear(HIDDEN, [q_size, kv_size, kv_size])
+    for i, w in enumerate((w_q, w_k, w_v)):
+        qkv_proj.load_shard(i, w)
+    x = torch.randn(3, HIDDEN)
+
+    q, k, v = qkv_proj(x).split(qkv_proj.output_sizes, dim=-1)
+
+    torch.testing.assert_close(q, x @ w_q.T, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(k, x @ w_k.T, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(v, x @ w_v.T, atol=1e-4, rtol=1e-4)
+
+
+def test_swiglu_mlp_matches_hf():
+    torch.manual_seed(0)
+    ref = Qwen3MLP(tiny_qwen3_config())
+    gate_up_proj = MergedLinear(HIDDEN, [INTERMEDIATE, INTERMEDIATE])
+    gate_up_proj.load_shard(0, ref.gate_proj.weight.data)
+    gate_up_proj.load_shard(1, ref.up_proj.weight.data)
+    act = SiluAndMul()
+    x = torch.randn(4, HIDDEN)
+
+    out = F.linear(act(gate_up_proj(x)), ref.down_proj.weight)
+
+    torch.testing.assert_close(out, ref(x), atol=1e-4, rtol=1e-4)
