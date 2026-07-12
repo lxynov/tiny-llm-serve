@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from transformers import Qwen3Config
 from transformers.models.qwen3.modeling_qwen3 import (
     Qwen3RMSNorm,
@@ -6,6 +7,7 @@ from transformers.models.qwen3.modeling_qwen3 import (
     apply_rotary_pos_emb,
 )
 
+from tiny_llm_serve.layers.activation import SiluAndMul
 from tiny_llm_serve.layers.layernorm import RMSNorm
 from tiny_llm_serve.layers.rotary_embedding import RotaryEmbedding
 
@@ -89,3 +91,14 @@ def test_rotary_matches_hf():
 
     torch.testing.assert_close(out_q.transpose(0, 1), ref_q[0], atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(out_k.transpose(0, 1), ref_k[0], atol=1e-4, rtol=1e-4)
+
+
+def test_silu_and_mul():
+    act = SiluAndMul()
+    gate = torch.tensor([[1.0, 0.0]])
+    up = torch.tensor([[2.0, 5.0]])
+
+    out = act(torch.cat([gate, up], dim=-1))
+
+    torch.testing.assert_close(out, F.silu(gate) * up, atol=1e-6, rtol=0)
+    assert out[0, 1] == 0.0
