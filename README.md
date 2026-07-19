@@ -23,6 +23,10 @@ uv run ruff check    # lint
 uv run ruff format   # format
 ```
 
+The tests check against the real `Qwen/Qwen3-0.6B` checkpoint, which the first
+`uv run pytest` downloads into the Hugging Face cache (~1.4GB). Later runs reuse
+it. Tests that need it skip on a machine that is both uncached and offline.
+
 ## Build
 
 ```bash

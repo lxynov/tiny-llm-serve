@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 
@@ -17,6 +17,8 @@ class ModelConfig:
     head_dim: int | None = None
     tie_word_embeddings: bool = False
     torch_dtype: str = "bfloat16"
+    architectures: list[str] = field(default_factory=list)
+    quantization_config: dict | None = None
 
     def __post_init__(self) -> None:
         if self.head_dim is None:
