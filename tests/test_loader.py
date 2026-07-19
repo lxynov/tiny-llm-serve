@@ -1,22 +1,11 @@
 import json
-from pathlib import Path
 
 import pytest
 import torch
-from huggingface_hub import snapshot_download
 from safetensors.torch import save_file
 
 from tiny_llm_serve.models import loader
-
-QWEN3 = "Qwen/Qwen3-0.6B"
-
-
-@pytest.fixture(scope="module")
-def qwen3_path() -> Path:
-    try:
-        return Path(snapshot_download(QWEN3, local_files_only=True))
-    except Exception:
-        pytest.skip(f"{QWEN3} not downloaded; run `uv run hf download {QWEN3}`")
+from tiny_llm_serve.models.qwen3 import Qwen3ForCausalLM
 
 
 def test_load_weights_merges_shards(tmp_path):
@@ -39,7 +28,7 @@ def test_load_weights_requires_safetensors_files(tmp_path):
         loader.load_weights(tmp_path)
 
 
-def test_config_ignores_unknown_keys_and_computes_head_dim(tmp_path):
+def write_config(tmp_path, **overrides):
     data = {
         "hidden_size": 64,
         "intermediate_size": 128,
@@ -50,14 +39,42 @@ def test_config_ignores_unknown_keys_and_computes_head_dim(tmp_path):
         "rope_theta": 10000.0,
         "rms_norm_eps": 1e-6,
         "max_position_embeddings": 512,
-        "architectures": ["ignored"],
+        "architectures": ["Qwen3ForCausalLM"],
+        **overrides,
     }
     (tmp_path / "config.json").write_text(json.dumps(data))
+
+
+def test_config_ignores_unknown_keys_and_computes_head_dim(tmp_path):
+    write_config(tmp_path, transformers_version="ignored")
 
     config = loader.load_config(tmp_path)
 
     assert config.head_dim == 16
     assert config.num_key_value_heads == 2
+    assert config.architectures == ["Qwen3ForCausalLM"]
+
+
+def test_resolve_model_class_supports_qwen3(tmp_path):
+    write_config(tmp_path)
+
+    model_class = loader.resolve_model_class(loader.load_config(tmp_path))
+
+    assert model_class is Qwen3ForCausalLM
+
+
+def test_load_model_rejects_unsupported_architecture(tmp_path):
+    write_config(tmp_path, architectures=["Qwen3MoeForCausalLM"])
+
+    with pytest.raises(ValueError, match="Qwen3MoeForCausalLM.*not supported"):
+        loader.load_model(tmp_path)
+
+
+def test_load_model_rejects_quantized_checkpoint(tmp_path):
+    write_config(tmp_path, quantization_config={"quant_method": "fp8"})
+
+    with pytest.raises(ValueError, match="quantized.*fp8.*not supported"):
+        loader.load_model(tmp_path)
 
 
 def test_qwen3_config(qwen3_path):
