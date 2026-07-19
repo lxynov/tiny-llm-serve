@@ -29,5 +29,16 @@ jobs:
       - name: Run linter
         run: uv run ruff check
 
+      # The tests fetch Qwen/Qwen3-0.6B (~1.4GB) on first use. Restoring it here
+      # keeps every run from re-downloading it, and keeps CI from depending on
+      # the hub being reachable. The key is fixed rather than hashed over the
+      # lockfile: the checkpoint is pinned by name, so a dependency bump is no
+      # reason to fetch it again.
+      - name: Cache the Hugging Face checkpoint
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-qwen3-0.6b
+
       - name: Run tests
         run: uv run pytest -q
