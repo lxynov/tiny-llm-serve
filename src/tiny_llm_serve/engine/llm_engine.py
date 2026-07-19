@@ -56,7 +56,8 @@ class LLM:
         """
         text = self.tokenizer.decode(self.generate_ids(prompt, max_tokens, stop))
         cuts = [text.index(s) for s in (stop or []) if s in text]
-        return text[: min(cuts)] if cuts else text
+        # decoding a flat id list yields a single str; the stub widens it to str | list[str]
+        return text[: min(cuts)] if cuts else text  # pyrefly: ignore[bad-return]
 
 
 def main() -> None:

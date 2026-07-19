@@ -34,6 +34,10 @@ class RotaryEmbedding(nn.Module):
         theta = 1.0 / (base**exponents)
         positions = torch.arange(max_position_embeddings, dtype=torch.float32)
         angles = torch.outer(positions, theta)
+        # nn.Module.__getattr__ widens attribute access to Tensor | Module; annotate
+        # the buffers so they stay tensors
+        self.cos_cache: torch.Tensor
+        self.sin_cache: torch.Tensor
         self.register_buffer("cos_cache", angles.cos(), persistent=False)
         self.register_buffer("sin_cache", angles.sin(), persistent=False)
 

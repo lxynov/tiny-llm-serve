@@ -7,6 +7,7 @@ from tiny_llm_serve.layers.attention import Attention, KVCache
 from tiny_llm_serve.layers.layernorm import RMSNorm
 from tiny_llm_serve.layers.linear import MergedLinear
 from tiny_llm_serve.layers.rotary_embedding import RotaryEmbedding
+from tiny_llm_serve.models.base import CausalLM
 
 # Checkpoint projection name -> (merged module attribute, shard index)
 SHARD_MAP = {
@@ -112,11 +113,11 @@ class Qwen3Model(nn.Module):
         return self.norm(x)
 
 
-class Qwen3ForCausalLM(nn.Module):
+class Qwen3ForCausalLM(CausalLM):
     """Qwen3 over a flattened [num_tokens] token layout (no batch dimension)."""
 
     def __init__(self, config: ModelConfig) -> None:
-        super().__init__()
+        super().__init__(config)
         self.config = config
         self.model = Qwen3Model(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -140,6 +141,7 @@ class Qwen3ForCausalLM(nn.Module):
                 # one GEMM instead of multiple) during inference.
                 merged_name, index = SHARD_MAP[parts[-2]]
                 module = self.get_submodule(".".join([*parts[:-2], merged_name]))
+                assert isinstance(module, MergedLinear)
                 module.load_shard(index, tensor)
             else:
                 params[name].copy_(tensor)

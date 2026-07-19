@@ -14,14 +14,15 @@ class ModelConfig:
     rope_theta: float
     rms_norm_eps: float
     max_position_embeddings: int
-    head_dim: int | None = None
+    # 0 means "derive from hidden_size // num_attention_heads" in __post_init__
+    head_dim: int = 0
     tie_word_embeddings: bool = False
     torch_dtype: str = "bfloat16"
     architectures: list[str] = field(default_factory=list)
     quantization_config: dict | None = None
 
     def __post_init__(self) -> None:
-        if self.head_dim is None:
+        if not self.head_dim:
             self.head_dim = self.hidden_size // self.num_attention_heads
 
     @classmethod

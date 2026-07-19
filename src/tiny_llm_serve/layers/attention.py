@@ -22,12 +22,12 @@ class KVCache:
         self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Append this step's k/v for a layer and return the full cached tensors."""
-        if self._keys[layer_idx] is None:
-            self._keys[layer_idx], self._values[layer_idx] = k, v
-        else:
-            self._keys[layer_idx] = torch.cat((self._keys[layer_idx], k))
-            self._values[layer_idx] = torch.cat((self._values[layer_idx], v))
-        return self._keys[layer_idx], self._values[layer_idx]
+        cached_k, cached_v = self._keys[layer_idx], self._values[layer_idx]
+        if cached_k is not None and cached_v is not None:
+            k = torch.cat((cached_k, k))
+            v = torch.cat((cached_v, v))
+        self._keys[layer_idx], self._values[layer_idx] = k, v
+        return k, v
 
 
 class Attention(nn.Module):
