@@ -4,11 +4,11 @@ from pathlib import Path
 import torch
 from huggingface_hub import snapshot_download
 from safetensors import safe_open
-from torch import nn
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from tiny_llm_serve.config import ModelConfig
 from tiny_llm_serve.models import MODEL_REGISTRY
+from tiny_llm_serve.models.base import CausalLM
 
 
 def resolve_model_path(model: str) -> Path:
@@ -22,10 +22,12 @@ def load_config(model_path: Path) -> ModelConfig:
 
 
 def load_tokenizer(model_path: Path) -> PreTrainedTokenizerBase:
-    return AutoTokenizer.from_pretrained(model_path)
+    # every backend it can return subclasses PreTrainedTokenizerBase; only the
+    # `| None` in its signature (for paths it can't resolve) widens the type
+    return AutoTokenizer.from_pretrained(model_path)  # pyrefly: ignore[bad-return]
 
 
-def resolve_model_class(config: ModelConfig) -> type[nn.Module]:
+def resolve_model_class(config: ModelConfig) -> type[CausalLM]:
     for arch in config.architectures:
         if arch in MODEL_REGISTRY:
             return MODEL_REGISTRY[arch]
@@ -50,7 +52,7 @@ def load_weights(model_path: Path) -> dict[str, torch.Tensor]:
 
 def load_model(
     model_path: Path, device: str = "cpu", dtype: torch.dtype = torch.float32
-) -> nn.Module:
+) -> CausalLM:
     """Build the model on `device` with `dtype` params and load checkpoint weights.
 
     We set the default dtype before initialization rather than casting the model
