@@ -7,6 +7,7 @@ from backends import backends
 from transformers import AutoModelForCausalLM
 
 from tiny_llm_serve.engine.llm_engine import LLM
+from tiny_llm_serve.engine.sampling_params import SamplingParams
 from tiny_llm_serve.models import loader
 
 PROMPT = "Where is Winterfell?"
@@ -20,6 +21,10 @@ PARITY_PROMPTS = [
     CHAT,
 ]
 PARITY_MAX_TOKENS = 16
+
+
+def greedy(max_tokens: int, **kwargs) -> SamplingParams:
+    return SamplingParams(temperature=0.0, max_tokens=max_tokens, **kwargs)
 
 
 @lru_cache(maxsize=None)
@@ -60,7 +65,7 @@ def greedy_parity(
     """Greedy-decode `prompt` with both engines; return (ours, HF's) token ids."""
     llm = load_llm(model_path, device, dtype)
     text = resolve_prompt(llm.tokenizer, prompt)
-    ours = llm.generate_ids(text, max_tokens=PARITY_MAX_TOKENS)
+    ours = llm.generate_ids(text, greedy(PARITY_MAX_TOKENS))
 
     eos = llm.tokenizer.eos_token_id
     input_ids = torch.tensor([llm.tokenizer.encode(text)], device=device)
@@ -121,14 +126,14 @@ def test_parity_with_hf_greedy(qwen3_path, device, prompt, dtype):
 @backends("all")
 def test_generate_stops_before_stop_substring(qwen3_path, device):
     llm = load_llm(str(qwen3_path), device)
-    baseline = llm.generate(PROMPT, max_tokens=20)
+    baseline = llm.generate(PROMPT, greedy(20))
     assert len(baseline) > 4
 
     # A slice of the (deterministic) greedy output is guaranteed to appear,
     # so the stop condition is certain to trigger.
     stop_str = baseline[len(baseline) // 2 : len(baseline) // 2 + 3]
 
-    output = llm.generate(PROMPT, max_tokens=20, stop=[stop_str])
+    output = llm.generate(PROMPT, greedy(20, stop=[stop_str]))
 
     assert stop_str not in output
     assert len(output) < len(baseline)
@@ -137,13 +142,24 @@ def test_generate_stops_before_stop_substring(qwen3_path, device):
 @backends("all")
 def test_generate_ids_stops_decoding_at_stop_substring(qwen3_path, device):
     llm = load_llm(str(qwen3_path), device)
-    baseline_ids = llm.generate_ids(PROMPT, max_tokens=20)
+    baseline_ids = llm.generate_ids(PROMPT, greedy(20))
     baseline = llm.tokenizer.decode(baseline_ids)
     assert len(baseline) > 4
 
     stop_str = baseline[len(baseline) // 2 : len(baseline) // 2 + 3]
 
-    output_ids = llm.generate_ids(PROMPT, max_tokens=20, stop=[stop_str])
+    output_ids = llm.generate_ids(PROMPT, greedy(20, stop=[stop_str]))
 
     # The decode loop must stop at the stop string, not run out `max_tokens`.
     assert 0 < len(output_ids) < len(baseline_ids)
+
+
+@backends("all")
+def test_seeded_sampling_is_reproducible(qwen3_path, device):
+    llm = load_llm(str(qwen3_path), device)
+    params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=12, seed=42)
+
+    first = llm.generate(PROMPT, params)
+    second = llm.generate(PROMPT, params)
+
+    assert first == second
