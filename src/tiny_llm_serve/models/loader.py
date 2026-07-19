@@ -4,9 +4,11 @@ from pathlib import Path
 import torch
 from huggingface_hub import snapshot_download
 from safetensors import safe_open
+from torch import nn
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from tiny_llm_serve.config import ModelConfig
+from tiny_llm_serve.models import MODEL_REGISTRY
 
 
 def resolve_model_path(model: str) -> Path:
@@ -23,6 +25,16 @@ def load_tokenizer(model_path: Path) -> PreTrainedTokenizerBase:
     return AutoTokenizer.from_pretrained(model_path)
 
 
+def resolve_model_class(config: ModelConfig) -> type[nn.Module]:
+    for arch in config.architectures:
+        if arch in MODEL_REGISTRY:
+            return MODEL_REGISTRY[arch]
+    raise ValueError(
+        f"model architectures {config.architectures} are not supported; "
+        f"supported architectures: {sorted(MODEL_REGISTRY)}"
+    )
+
+
 def load_weights(model_path: Path) -> dict[str, torch.Tensor]:
     """Load all safetensors shards under `model_path` into a name -> tensor dict."""
     files = sorted(model_path.glob("*.safetensors"))
@@ -34,6 +46,35 @@ def load_weights(model_path: Path) -> dict[str, torch.Tensor]:
             for name in f.keys():
                 weights[name] = f.get_tensor(name)
     return weights
+
+
+def load_model(
+    model_path: Path, device: str = "cpu", dtype: torch.dtype = torch.float32
+) -> nn.Module:
+    """Build the model on `device` with `dtype` params and load checkpoint weights.
+
+    We set the default dtype before initialization rather than casting the model
+    afterwards (i.e., `model.to(dtype)`). A blanket `.to(dtype)` cast would recursively
+    convert all parameters and buffers. By changing the default dtype instead, we preserve
+    the precision of buffers that explicitly request float32 during initialization
+    (such as the RoPE cos/sin frequency caches), which are sensitive to numerical precision.
+    """
+    config = load_config(model_path)
+    model_class = resolve_model_class(config)
+    if config.quantization_config is not None:
+        # e.g. the FP8 Qwen3 checkpoints: same architecture name, but their weights
+        # are stored quantized with per-block scales, which load_weights can't handle
+        quant_method = config.quantization_config.get("quant_method", "unknown")
+        raise ValueError(f"quantized checkpoints ({quant_method}) are not supported")
+    default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(dtype)
+    try:
+        with torch.device(device):
+            model = model_class(config)
+    finally:
+        torch.set_default_dtype(default_dtype)
+    model.load_weights(load_weights(model_path))
+    return model.eval()
 
 
 def main() -> None:
