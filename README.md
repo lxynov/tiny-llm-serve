@@ -21,6 +21,7 @@ directly, run `source .venv/bin/activate`.
 uv run pytest        # run tests
 uv run ruff check    # lint
 uv run ruff format   # format
+uv run pyrefly check # type check
 ```
 
 The tests check against the real `Qwen/Qwen3-0.6B` checkpoint, which the first

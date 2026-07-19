@@ -29,6 +29,9 @@ jobs:
       - name: Run linter
         run: uv run ruff check
 
+      - name: Run type check
+        run: uv run pyrefly check
+
       # The tests fetch Qwen/Qwen3-0.6B (~1.4GB) on first use. Restoring it here
       # keeps every run from re-downloading it, and keeps CI from depending on
       # the hub being reachable. The key is fixed rather than hashed over the

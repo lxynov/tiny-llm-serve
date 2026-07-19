@@ -25,9 +25,21 @@ addopts = "-ra"
 [tool.ruff.lint]
 extend-select = ["I"]
 
+[tool.pyrefly]
+# Tests are left unchecked: they poke at transformers' loosely-typed API surface,
+# where checking buys little and forces casts that add noise without runtime value.
+project-includes = ["src"]
+python-version = "3.12"
+
+[tool.pyrefly.errors]
+# Flag `# pyrefly: ignore` comments that have stopped suppressing anything, so
+# the third-party stub workarounds get deleted once upstream types improve.
+unused-ignore = true
+
 [dependency-groups]
 dev = [
     "pdbpp>=0.12.1",
+    "pyrefly>=1.1.1",
     "pytest>=9.1.1",
     "ruff>=0.15.21",
 ]
