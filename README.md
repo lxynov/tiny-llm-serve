@@ -15,6 +15,24 @@ uv sync
 Commands below run inside `.venv` via `uv run`. To use the environment
 directly, run `source .venv/bin/activate`.
 
+## Run
+
+```bash
+# Greedy (temperature 0) completion of the default prompt
+uv run python -m tiny_llm_serve.engine.llm_engine "Where is Winterfell?"
+
+# Sampling: temperature, top-k, top-p, repetition penalty, seed
+uv run python -m tiny_llm_serve.engine.llm_engine "Where is Winterfell?" \
+  --temperature 0.8 --top-k 50 --top-p 0.95 \
+  --repetition-penalty 1.1 --max-tokens 64 --seed 0
+
+# Stop as soon as a string appears (repeat --stop for more than one)
+uv run python -m tiny_llm_serve.engine.llm_engine "Count: 1 2 3" --stop $'\n' --stop "10"
+```
+
+`--model` selects the checkpoint (default `Qwen/Qwen3-0.6B`), and the device is
+picked automatically.
+
 ## Development
 
 ```bash
