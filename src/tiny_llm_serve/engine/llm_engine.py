@@ -63,7 +63,9 @@ class LLM:
 def main() -> None:
     model = sys.argv[1] if len(sys.argv) > 1 else "Qwen/Qwen3-0.6B"
     prompt = sys.argv[2] if len(sys.argv) > 2 else "Where is Winterfell?"
-    llm = LLM(model)
+    device = loader.resolve_device()
+    print(f"device: {device}", file=sys.stderr)
+    llm = LLM(model, device=device)
     print(prompt + llm.generate(prompt, max_tokens=32))
 
 
