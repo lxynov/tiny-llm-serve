@@ -1,5 +1,7 @@
-import pytest
+from functools import lru_cache
+
 import torch
+from backends import backends
 from transformers import AutoModelForCausalLM
 
 from tiny_llm_serve.engine.llm_engine import LLM
@@ -7,19 +9,26 @@ from tiny_llm_serve.engine.llm_engine import LLM
 PROMPT = "Where is Winterfell?"
 
 
-@pytest.fixture(scope="module")
-def llm(qwen3_path) -> LLM:
-    return LLM(str(qwen3_path))
+@lru_cache(maxsize=None)
+def load_llm(model_path: str, device: str) -> LLM:
+    """Cache one LLM per (checkpoint, backend) so parametrized tests reuse it."""
+    return LLM(model_path, device=device)
 
 
-def test_generate_ids_matches_hf_greedy(llm, qwen3_path):
+@backends("all")
+def test_generate_ids_matches_hf_greedy(qwen3_path, device):
+    llm = load_llm(str(qwen3_path), device)
     input_ids = llm.tokenizer.encode(PROMPT)
-    ref_model = AutoModelForCausalLM.from_pretrained(
-        qwen3_path, dtype=torch.float32
-    ).eval()
+    ref_model = (
+        AutoModelForCausalLM.from_pretrained(qwen3_path, dtype=torch.float32)
+        .eval()
+        .to(device)
+    )
     with torch.no_grad():
         ref_ids = ref_model.generate(
-            torch.tensor([input_ids]), max_new_tokens=10, do_sample=False
+            torch.tensor([input_ids], device=device),
+            max_new_tokens=10,
+            do_sample=False,
         )[0, len(input_ids) :]
 
     output_ids = llm.generate_ids(PROMPT, max_tokens=10)
@@ -27,7 +36,9 @@ def test_generate_ids_matches_hf_greedy(llm, qwen3_path):
     assert output_ids == ref_ids.tolist()
 
 
-def test_generate_stops_before_stop_substring(llm):
+@backends("all")
+def test_generate_stops_before_stop_substring(qwen3_path, device):
+    llm = load_llm(str(qwen3_path), device)
     baseline = llm.generate(PROMPT, max_tokens=20)
     assert len(baseline) > 4
 
@@ -41,7 +52,9 @@ def test_generate_stops_before_stop_substring(llm):
     assert len(output) < len(baseline)
 
 
-def test_generate_ids_stops_decoding_at_stop_substring(llm):
+@backends("all")
+def test_generate_ids_stops_decoding_at_stop_substring(qwen3_path, device):
+    llm = load_llm(str(qwen3_path), device)
     baseline_ids = llm.generate_ids(PROMPT, max_tokens=20)
     baseline = llm.tokenizer.decode(baseline_ids)
     assert len(baseline) > 4

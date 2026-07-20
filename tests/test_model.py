@@ -1,4 +1,5 @@
 import torch
+from backends import backends
 from transformers import Qwen3Config
 from transformers import Qwen3ForCausalLM as HFQwen3ForCausalLM
 
@@ -43,13 +44,14 @@ def tiny_hf_config() -> Qwen3Config:
     )
 
 
-def test_forward_returns_logits():
+@backends("all")
+def test_forward_returns_logits(device):
     torch.manual_seed(0)
     config = tiny_config()
-    model = Qwen3ForCausalLM(config)
-    input_ids = torch.randint(0, config.vocab_size, (5,))
+    model = Qwen3ForCausalLM(config).to(device)
+    input_ids = torch.randint(0, config.vocab_size, (5,), device=device)
 
-    logits = model(input_ids, torch.arange(5))
+    logits = model(input_ids, torch.arange(5, device=device))
 
     assert logits.shape == (5, config.vocab_size)
     assert logits.isfinite().all()
@@ -61,34 +63,40 @@ def test_lm_head_tied_to_embeddings():
     assert model.lm_head.weight is model.model.embed_tokens.weight
 
 
-def test_logits_match_hf():
+@backends("all")
+def test_logits_match_hf(device):
     torch.manual_seed(0)
     ref = HFQwen3ForCausalLM(tiny_hf_config()).eval()
     model = Qwen3ForCausalLM(tiny_config()).eval()
     model.load_weights(ref.state_dict())
-    input_ids = torch.randint(0, 128, (7,))
+    ref = ref.to(device)
+    model = model.to(device)
+    input_ids = torch.randint(0, 128, (7,), device=device)
 
     with torch.no_grad():
         ref_logits = ref(input_ids.unsqueeze(0)).logits[0]
-        logits = model(input_ids, torch.arange(7))
+        logits = model(input_ids, torch.arange(7, device=device))
 
     torch.testing.assert_close(logits, ref_logits, atol=1e-4, rtol=1e-4)
 
 
-def test_incremental_decode_matches_full_forward():
+@backends("all")
+def test_incremental_decode_matches_full_forward(device):
     torch.manual_seed(0)
     config = tiny_config()
-    model = Qwen3ForCausalLM(config).eval()
-    input_ids = torch.randint(0, config.vocab_size, (6,))
+    model = Qwen3ForCausalLM(config).eval().to(device)
+    input_ids = torch.randint(0, config.vocab_size, (6,), device=device)
 
     with torch.no_grad():
-        full_logits = model(input_ids, torch.arange(6))
+        full_logits = model(input_ids, torch.arange(6, device=device))
 
         kv_cache = model.new_kv_cache()
-        prefill_logits = model(input_ids[:3], torch.arange(3), kv_cache)
+        prefill_logits = model(input_ids[:3], torch.arange(3, device=device), kv_cache)
         step_logits = [prefill_logits[-1]]
         for pos in range(3, 6):
-            logits = model(input_ids[pos : pos + 1], torch.tensor([pos]), kv_cache)
+            logits = model(
+                input_ids[pos : pos + 1], torch.tensor([pos], device=device), kv_cache
+            )
             step_logits.append(logits[0])
 
     assert kv_cache.seq_len == 6
