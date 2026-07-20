@@ -1,5 +1,6 @@
 import pytest
 import torch
+from backends import backends
 
 from tiny_llm_serve.layers.attention import Attention
 
@@ -8,12 +9,13 @@ NUM_KV_HEADS = 2
 HEAD_DIM = 8
 
 
-def test_attention_decode_matches_manual_gqa():
+@backends("all")
+def test_attention_decode_matches_manual_gqa(device):
     torch.manual_seed(0)
     attn = Attention()
-    q = torch.randn(1, NUM_HEADS, HEAD_DIM)
-    k = torch.randn(5, NUM_KV_HEADS, HEAD_DIM)
-    v = torch.randn(5, NUM_KV_HEADS, HEAD_DIM)
+    q = torch.randn(1, NUM_HEADS, HEAD_DIM).to(device)
+    k = torch.randn(5, NUM_KV_HEADS, HEAD_DIM).to(device)
+    v = torch.randn(5, NUM_KV_HEADS, HEAD_DIM).to(device)
 
     out = attn(q, k, v)
 

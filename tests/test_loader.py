@@ -101,7 +101,7 @@ def test_qwen3_chat_template(qwen3_path):
     token_ids = tokenizer.apply_chat_template(
         [{"role": "user", "content": "Hi"}], add_generation_prompt=True
     )
-    text = tokenizer.decode(token_ids)
+    text = tokenizer.decode(token_ids)  # type: ignore
 
     assert "<|im_start|>user" in text
     assert "<|im_start|>assistant" in text

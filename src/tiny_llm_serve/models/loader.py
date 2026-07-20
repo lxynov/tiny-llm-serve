@@ -17,6 +17,17 @@ def resolve_model_path(model: str) -> Path:
     return Path(snapshot_download(model))
 
 
+def resolve_device(device: str | None = None) -> str:
+    """Return `device` if given, else the best available: cuda, then mps, then cpu."""
+    if device is not None:
+        return device
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def load_config(model_path: Path) -> ModelConfig:
     return ModelConfig.from_json(model_path / "config.json")
 
