@@ -14,6 +14,7 @@ class CausalLM(nn.Module):
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
+        self.config = config
 
     def load_weights(self, weights: dict[str, torch.Tensor]) -> None:
         """Load an HF-format state dict into the model."""

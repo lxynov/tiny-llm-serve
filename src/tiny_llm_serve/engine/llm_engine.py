@@ -22,23 +22,26 @@ class LLM:
 
     @torch.inference_mode()
     def generate_ids(
-        self, prompt: str, params: SamplingParams | None = None
+        self, prompt: str | list[int], params: SamplingParams | None = None
     ) -> list[int]:
-        """Decode the completion token ids for `prompt`.
+        """Decode the completion token ids for `prompt` (text or token ids).
 
-        Stops at the EOS token, once a `params.stop` substring appears in the
-        decoded text, or after `params.max_tokens`, whichever comes first. A
-        stop string can end mid-token, so the ids may overshoot it; `generate`
-        trims exactly. `params=None` means greedy with the default budget.
+        Accepting pre-tokenized prompts lets benchmarks keep tokenizer time out
+        of engine measurements. Stops at the EOS token, once a `params.stop`
+        substring appears in the decoded text, or after `params.max_tokens`,
+        whichever comes first. A stop string can end mid-token, so the ids may
+        overshoot it; `generate` trims exactly. `params=None` means greedy with
+        the default budget.
         """
         if params is None:
             params = SamplingParams(temperature=0.0)
         generator = None
         if params.seed is not None:
             generator = torch.Generator(device=self.device).manual_seed(params.seed)
-        seen_ids = torch.tensor(
-            self.tokenizer.encode(prompt), dtype=torch.long, device=self.device
+        prompt_ids = (
+            self.tokenizer.encode(prompt) if isinstance(prompt, str) else prompt
         )
+        seen_ids = torch.tensor(prompt_ids, dtype=torch.long, device=self.device)
         kv_cache = self.model.new_kv_cache()
         positions = torch.arange(len(seen_ids), device=self.device)
         logits = self.model(seen_ids, positions, kv_cache)
@@ -47,7 +50,7 @@ class LLM:
             next_id = self.sampler(
                 logits[-1:], params, seen_ids.unsqueeze(0), generator
             )
-            if next_id.item() == self.tokenizer.eos_token_id:
+            if not params.ignore_eos and next_id.item() == self.tokenizer.eos_token_id:
                 break
             output_ids.append(next_id.item())
             seen_ids = torch.cat((seen_ids, next_id))
