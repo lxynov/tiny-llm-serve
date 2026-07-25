@@ -16,6 +16,9 @@ class SamplingParams:
     max_tokens: int = 128
     stop: list[str] = field(default_factory=list)
     seed: int | None = None
+    # Keep generating past the EOS token, still capped by max_tokens. Benchmarks
+    # set this to force exact output lengths so runs are comparable.
+    ignore_eos: bool = False
 
     def __post_init__(self) -> None:
         if self.temperature < 0:
