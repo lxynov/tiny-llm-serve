@@ -123,6 +123,31 @@ def test_parity_with_hf_greedy(qwen3_path, device, prompt, dtype):
     assert ours == ref, divergence_report(str(qwen3_path), ours, ref)
 
 
+@backends("cpu")
+def test_pretokenized_prompt_matches_text_prompt(qwen3_path, device):
+    llm = load_llm(str(qwen3_path), device)
+    prompt_ids = llm.tokenizer.encode(PROMPT)
+
+    from_ids = llm.generate_ids(prompt_ids, greedy(8))
+    from_text = llm.generate_ids(PROMPT, greedy(8))
+
+    assert from_ids == from_text
+
+
+@backends("cpu")
+def test_ignore_eos_generates_exactly_max_tokens(qwen3_path, device):
+    """ignore_eos runs past the natural EOS but still respects max_tokens."""
+    llm = load_llm(str(qwen3_path), device)
+    prompt = resolve_prompt(llm.tokenizer, CHAT)  # a short answer, then EOS
+    budget = 48
+
+    baseline = llm.generate_ids(prompt, greedy(budget))
+    forced = llm.generate_ids(prompt, greedy(budget, ignore_eos=True))
+
+    assert len(baseline) < budget  # EOS actually fired within the budget
+    assert len(forced) == budget
+
+
 @backends("all")
 def test_generate_stops_before_stop_substring(qwen3_path, device):
     llm = load_llm(str(qwen3_path), device)
