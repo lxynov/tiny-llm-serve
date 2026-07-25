@@ -21,6 +21,9 @@ testpaths = ["tests"]
 # Always summarize skips: tests that need a checkpoint skip themselves, and a
 # bare `s` in the progress line hides how much didn't run.
 addopts = "-ra"
+# The benchmarks package lives at the repo root (it is tooling, not part of
+# the installed library), so tests need the root on sys.path to import it.
+pythonpath = ["."]
 
 [tool.ruff.lint]
 extend-select = ["I"]
