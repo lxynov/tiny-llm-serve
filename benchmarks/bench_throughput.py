@@ -42,6 +42,28 @@ def run_sequential(llm: LLM, requests: list[Request]) -> list[list[int]]:
     return outputs
 
 
+def waves(requests: list[Request], batch_size: int) -> list[list[Request]]:
+    return [requests[i : i + batch_size] for i in range(0, len(requests), batch_size)]
+
+
+def wave_model_len(wave: list[Request]) -> int:
+    return max(len(r.prompt_ids) for r in wave) + max(r.output_len for r in wave)
+
+
+def run_static(llm: LLM, requests: list[Request], batch_size: int) -> list[list[int]]:
+    """Static batching over preallocated KV slots, one wave at a time."""
+    outputs = []
+    for wave in waves(requests, batch_size):
+        params = [
+            SamplingParams(temperature=0.0, max_tokens=r.output_len, ignore_eos=True)
+            for r in wave
+        ]
+        outputs += llm.generate_batch_ids(
+            [r.prompt_ids for r in wave], params, max_model_len=wave_model_len(wave)
+        )
+    return outputs
+
+
 def git_state() -> tuple[str | None, bool | None]:
     """The commit and whether the tree was dirty.
 
@@ -110,14 +132,29 @@ def bench(args: argparse.Namespace) -> dict:
         args.workload, args.num_requests, llm.model.config.vocab_size, args.seed
     )
 
+    def runner() -> list[list[int]]:
+        if args.mode == "static":
+            return run_static(llm, requests, args.batch_size)
+        return run_sequential(llm, requests)
+
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     start = time.perf_counter()
-    outputs = run_sequential(llm, requests)
+    outputs = runner()
     wall = time.perf_counter() - start
 
     prompt_tokens = sum(len(r.prompt_ids) for r in requests)
     output_tokens = sum(len(o) for o in outputs)
+    used_kv_tokens = prompt_tokens + output_tokens
+    if args.mode == "static":
+        reserved_kv_tokens = sum(
+            len(w) * wave_model_len(w) for w in waves(requests, args.batch_size)
+        )
+        peak_concurrent_seqs = max(len(w) for w in waves(requests, args.batch_size))
+    else:
+        # The naive sequential cache grows exactly with what it stores.
+        reserved_kv_tokens = used_kv_tokens
+        peak_concurrent_seqs = 1
     commit, dirty = git_state()
     now = datetime.now(timezone.utc)
     return {
@@ -138,7 +175,10 @@ def bench(args: argparse.Namespace) -> dict:
         "workload": args.workload,
         "num_requests": args.num_requests,
         "seed": args.seed,
-        "config": {"dtype": args.dtype},
+        "config": {
+            "dtype": args.dtype,
+            "batch_size": args.batch_size if args.mode == "static" else None,
+        },
         "metrics": {
             "wall_time_s": wall,
             "prompt_tokens": prompt_tokens,
@@ -148,10 +188,8 @@ def bench(args: argparse.Namespace) -> dict:
             "peak_gpu_memory_bytes": (
                 torch.cuda.max_memory_allocated() if device == "cuda" else None
             ),
-            # Sequential mode runs one sequence at a time, and the naive cache
-            # reserves exactly what it stores, so KV efficiency is 1 by design.
-            "peak_concurrent_seqs": 1,
-            "kv_efficiency": 1.0,
+            "peak_concurrent_seqs": peak_concurrent_seqs,
+            "kv_efficiency": used_kv_tokens / reserved_kv_tokens,
         },
     }
 
@@ -162,7 +200,10 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--workload", choices=sorted(WORKLOADS), required=True)
     parser.add_argument("--num-requests", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--mode", choices=["sequential"], default="sequential")
+    parser.add_argument(
+        "--mode", choices=["sequential", "static"], default="sequential"
+    )
+    parser.add_argument("--batch-size", type=int, default=8, help="static mode only")
     parser.add_argument("--device", default=None, help="default: auto-select")
     parser.add_argument("--dtype", choices=sorted(DTYPES), default="float32")
     parser.add_argument("--output-dir", type=Path, default=RESULTS_DIR)

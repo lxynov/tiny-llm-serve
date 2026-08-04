@@ -179,6 +179,95 @@ def test_generate_ids_stops_decoding_at_stop_substring(qwen3_path, device):
     assert 0 < len(output_ids) < len(baseline_ids)
 
 
+TINY_PROMPTS = [list(range(1, 9)), [3, 1, 4, 1, 5], [42], [7] * 6]
+
+# Deliberately ragged (13/1/4/5 tokens). Batched decode pads every slot out to
+# the longest row, so a short row reads past its own length -- into stale pad KV
+# and never-written zeros -- only when the spread is wide. At near-equal lengths
+# there is too little of that to flip a token, and dropping _DecodeStep.attn_mask
+# entirely still passes. Keep these lengths far apart or this stops testing the
+# mask.
+RAGGED_PROMPTS = [
+    PARITY_PROMPTS[3],  # 13 tokens
+    "Hi",  # 1 token
+    PARITY_PROMPTS[2],  # 4 tokens
+    PARITY_PROMPTS[1],  # 5 tokens
+]
+
+
+@backends("all")
+def test_static_batch_matches_sequential_on_tiny_model(tiny_checkpoint_path, device):
+    """Day-9 definition of done: a static batch of 4 tiny-model sequences of
+    different lengths and budgets produces exactly the tokens each would get
+    alone.
+
+    This pins slot isolation and per-row budgets -- the tiny model maps each
+    prompt to its own constant token, so a row served another row's slot shows
+    up immediately. It does not pin masking: random weights make the argmax
+    indifferent to attention numerics, so a missing decode mask survives here
+    at any length spread. test_static_batch_matches_sequential_on_qwen covers
+    that.
+    """
+    llm = load_llm(str(tiny_checkpoint_path), device)
+    budgets = [8, 12, 5, 12]
+    params = [greedy(n) for n in budgets]
+
+    batch = llm.generate_batch_ids(TINY_PROMPTS, params)
+    sequential = [llm.generate_ids(p, greedy(n)) for p, n in zip(TINY_PROMPTS, budgets)]
+
+    assert batch == sequential
+
+
+@backends("all")
+def test_static_batch_matches_sequential_on_qwen(qwen3_path, device):
+    """Real-weight equivalence, where EOS can fire and rows finish at
+    different steps while the rest of the batch continues.
+
+    Weights sensitive enough to notice, over prompts ragged enough to expose
+    what the decode mask hides: this is the test that fails if
+    _DecodeStep.attn_mask stops masking.
+    """
+    llm = load_llm(str(qwen3_path), device)
+
+    batch = llm.generate_batch(RAGGED_PROMPTS, greedy(10))
+    sequential = [llm.generate(p, greedy(10)) for p in RAGGED_PROMPTS]
+
+    assert batch == sequential
+
+
+@backends("cpu")
+def test_static_batch_seeded_sampling_is_reproducible(tiny_checkpoint_path, device):
+    llm = load_llm(str(tiny_checkpoint_path), device)
+    params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=8, seed=7)
+
+    assert llm.generate_batch_ids(TINY_PROMPTS, params) == llm.generate_batch_ids(
+        TINY_PROMPTS, params
+    )
+
+
+@backends("cpu")
+def test_static_batch_raises_when_slots_overflow(tiny_checkpoint_path, device):
+    llm = load_llm(str(tiny_checkpoint_path), device)
+
+    with pytest.raises(RuntimeError, match="out of KV capacity"):
+        llm.generate_batch_ids([[1, 2, 3, 4]], greedy(8), max_model_len=6)
+
+
+def test_static_batch_rejects_unsupported_params(tiny_checkpoint_path):
+    llm = load_llm(str(tiny_checkpoint_path), "cpu")
+
+    with pytest.raises(ValueError, match="stop strings"):
+        llm.generate_batch_ids([[1], [2]], greedy(4, stop=["x"]))
+    with pytest.raises(ValueError, match="only in max_tokens"):
+        llm.generate_batch_ids(
+            [[1], [2]], [greedy(4), SamplingParams(temperature=0.8, max_tokens=4)]
+        )
+    with pytest.raises(ValueError, match="2 sampling params for 3"):
+        llm.generate_batch_ids([[1], [2], [3]], [greedy(4), greedy(4)])
+    with pytest.raises(ValueError, match="empty prompts"):
+        llm.generate_batch_ids([[1], []], greedy(4))
+
+
 @backends("all")
 def test_seeded_sampling_is_reproducible(qwen3_path, device):
     llm = load_llm(str(qwen3_path), device)
