@@ -1,6 +1,7 @@
 import json
 
 from benchmarks.bench_throughput import main
+from benchmarks.workloads import build_workload
 
 
 def bench_args(tiny_checkpoint_path, tmp_path, **extra) -> list[str]:
@@ -35,3 +36,33 @@ def test_harness_writes_a_complete_record(tiny_checkpoint_path, tmp_path):
     assert metrics["output_tokens"] == 2 * 128
     assert len(metrics["wall_times_s"]) == 2
     assert metrics["output_tok_s"] > 0
+    # The naive sequential cache reserves exactly what it stores.
+    assert metrics["kv_efficiency"] == 1.0
+    assert metrics["peak_concurrent_seqs"] == 1
+
+
+def test_static_mode_drains_the_workload_in_waves(tiny_checkpoint_path, tmp_path):
+    record = main(
+        bench_args(
+            tiny_checkpoint_path,
+            tmp_path,
+            **{
+                "--workload": "mixed-out",
+                "--num-requests": "3",
+                "--mode": "static",
+                "--batch-size": "2",
+                "--repeats": "1",
+                "--warmup": "0",
+            },
+        )
+    )
+
+    assert record["engine_mode"] == "static"
+    assert record["config"]["batch_size"] == 2
+    metrics = record["metrics"]
+    # All 3 requests ran (two waves of 2 + 1), with forced output lengths.
+    workload = build_workload("mixed-out", 3, 128, seed=0)
+    assert metrics["output_tokens"] == sum(r.output_len for r in workload)
+    assert metrics["peak_concurrent_seqs"] == 2
+    # Slots reserve the wave's worst case, so mixed lengths waste reservation.
+    assert 0 < metrics["kv_efficiency"] < 1

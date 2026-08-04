@@ -44,10 +44,11 @@ class RotaryEmbedding(nn.Module):
     def forward(
         self, positions: torch.Tensor, q: torch.Tensor, k: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Rotate q [num_tokens, num_heads, head_dim] and k [num_tokens, num_heads, head_dim]."""
-        # unsqueeze(1) broadcasts [num_tokens, head_dim // 2] to [num_tokens, 1, head_dim // 2]
-        cos = self.cos_cache[positions].unsqueeze(1).to(q.dtype)
-        sin = self.sin_cache[positions].unsqueeze(1).to(q.dtype)
+        """Rotate q/k [..., num_heads, head_dim] by positions [...] (one
+        position per token; any leading layout, e.g. flat or [batch, seq])."""
+        # unsqueeze(-2) broadcasts [..., head_dim // 2] over the heads axis
+        cos = self.cos_cache[positions].unsqueeze(-2).to(q.dtype)
+        sin = self.sin_cache[positions].unsqueeze(-2).to(q.dtype)
         return _rotate(q, cos, sin), _rotate(k, cos, sin)
 
 

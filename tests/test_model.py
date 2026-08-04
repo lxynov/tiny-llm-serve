@@ -3,6 +3,7 @@ from backends import backends
 from tinymodel import tiny_config, tiny_hf_config
 from transformers import Qwen3ForCausalLM as HFQwen3ForCausalLM
 
+from tiny_llm_serve.kv import NaiveKVCache
 from tiny_llm_serve.models.qwen3 import Qwen3ForCausalLM
 
 
@@ -43,6 +44,21 @@ def test_logits_match_hf(device):
 
 
 @backends("all")
+def test_batched_forward_matches_per_sequence(device):
+    torch.manual_seed(0)
+    config = tiny_config()
+    model = Qwen3ForCausalLM(config).eval().to(device)
+    input_ids = torch.randint(0, config.vocab_size, (2, 6), device=device)
+    positions = torch.arange(6, device=device).expand(2, 6)
+
+    with torch.no_grad():
+        batched = model(input_ids, positions)
+        singles = torch.stack([model(input_ids[i], positions[i]) for i in range(2)])
+
+    torch.testing.assert_close(batched, singles, atol=1e-4, rtol=1e-4)
+
+
+@backends("all")
 def test_incremental_decode_matches_full_forward(device):
     torch.manual_seed(0)
     config = tiny_config()
@@ -52,7 +68,7 @@ def test_incremental_decode_matches_full_forward(device):
     with torch.no_grad():
         full_logits = model(input_ids, torch.arange(6, device=device))
 
-        kv_cache = model.new_kv_cache()
+        kv_cache = NaiveKVCache(config.num_hidden_layers)
         prefill_logits = model(input_ids[:3], torch.arange(3, device=device), kv_cache)
         step_logits = [prefill_logits[-1]]
         for pos in range(3, 6):
