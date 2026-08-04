@@ -42,11 +42,21 @@ compares.
 ```bash
 # Run a seeded workload and write a JSON record to benchmarks/results/
 uv run python -m benchmarks.bench_throughput --workload mixed-out --num-requests 8
+
+# Same workload under static batching
+uv run python -m benchmarks.bench_throughput --workload mixed-out --num-requests 8 \
+  --mode static --batch-size 8
 ```
 
-`--mode` selects the engine mode (`sequential` today; static and continuous
-batching land next), `--dtype bfloat16` suits GPU runs, and `--device`
-overrides auto-selection.
+`--mode` selects the engine mode, `--dtype bfloat16` suits GPU runs, and
+`--device` overrides auto-selection.
+
+| Mode | Engine path | KV reservation counted |
+|---|---|---|
+| `sequential` | One request at a time, naive growing cache | Exactly what it stores (efficiency 1.0) |
+| `static` | Successive full batches of `--batch-size` (all requests are drained, so cross-mode runs stay comparable) | Per wave: `batch × (longest prompt + longest output)`, each slot's preallocated worst case |
+
+Continuous batching modes land next and reuse the same flags.
 
 ### Workloads
 

@@ -35,3 +35,22 @@ def test_attention_rejects_partial_prefill():
 
     with pytest.raises(ValueError, match="partial prefill"):
         attn(q, k, v)
+
+
+@backends("all")
+def test_batched_decode_mask_hides_invalid_keys(device):
+    """A masked batched decode row equals an unbatched decode over only that
+    row's valid prefix -- the property batched generation relies on."""
+    torch.manual_seed(0)
+    attn = Attention()
+    q = torch.randn(2, 1, NUM_HEADS, HEAD_DIM, device=device)
+    k = torch.randn(2, 5, NUM_KV_HEADS, HEAD_DIM, device=device)
+    v = torch.randn(2, 5, NUM_KV_HEADS, HEAD_DIM, device=device)
+    valid = torch.tensor([3, 5], device=device)
+    mask = (torch.arange(5, device=device) < valid[:, None]).view(2, 1, 1, 5)
+
+    out = attn(q, k, v, mask)
+
+    for i, n in enumerate(valid.tolist()):
+        ref = attn(q[i], k[i, :n], v[i, :n])
+        torch.testing.assert_close(out[i], ref, atol=1e-5, rtol=1e-5)

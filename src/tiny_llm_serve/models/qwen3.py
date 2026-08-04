@@ -2,8 +2,9 @@ import torch
 from torch import nn
 
 from tiny_llm_serve.config import ModelConfig
+from tiny_llm_serve.kv import KVCacheView
 from tiny_llm_serve.layers.activation import SiluAndMul
-from tiny_llm_serve.layers.attention import Attention, KVCache
+from tiny_llm_serve.layers.attention import Attention
 from tiny_llm_serve.layers.layernorm import RMSNorm
 from tiny_llm_serve.layers.linear import MergedLinear
 from tiny_llm_serve.layers.rotary_embedding import RotaryEmbedding
@@ -39,17 +40,19 @@ class Qwen3Attention(nn.Module):
         self.attn = Attention()
 
     def forward(
-        self, x: torch.Tensor, positions: torch.Tensor, kv_cache: KVCache | None
+        self, x: torch.Tensor, positions: torch.Tensor, kv_cache: KVCacheView | None
     ) -> torch.Tensor:
         q, k, v = self.qkv_proj(x).split(self.qkv_proj.output_sizes, dim=-1)
-        q = self.q_norm(q.view(-1, self.num_heads, self.head_dim))
-        k = self.k_norm(k.view(-1, self.num_kv_heads, self.head_dim))
-        v = v.view(-1, self.num_kv_heads, self.head_dim)
+        q = self.q_norm(q.view(*q.shape[:-1], self.num_heads, self.head_dim))
+        k = self.k_norm(k.view(*k.shape[:-1], self.num_kv_heads, self.head_dim))
+        v = v.view(*v.shape[:-1], self.num_kv_heads, self.head_dim)
         q, k = self.rotary_emb(positions, q, k)
+        attn_mask = None
         if kv_cache is not None:
             k, v = kv_cache.append(self.layer_idx, k, v)
-        o = self.attn(q, k, v)
-        return self.o_proj(o.flatten(1))
+            attn_mask = kv_cache.attn_mask
+        o = self.attn(q, k, v, attn_mask)
+        return self.o_proj(o.flatten(-2))
 
 
 class Qwen3MLP(nn.Module):
@@ -80,7 +83,7 @@ class Qwen3DecoderLayer(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, positions: torch.Tensor, kv_cache: KVCache | None
+        self, x: torch.Tensor, positions: torch.Tensor, kv_cache: KVCacheView | None
     ) -> torch.Tensor:
         x = x + self.self_attn(self.input_layernorm(x), positions, kv_cache)
         return x + self.mlp(self.post_attention_layernorm(x))
@@ -105,7 +108,7 @@ class Qwen3Model(nn.Module):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        kv_cache: KVCache | None = None,
+        kv_cache: KVCacheView | None = None,
     ) -> torch.Tensor:
         x = self.embed_tokens(input_ids)
         for layer in self.layers:
@@ -114,7 +117,7 @@ class Qwen3Model(nn.Module):
 
 
 class Qwen3ForCausalLM(CausalLM):
-    """Qwen3 over a flattened [num_tokens] token layout (no batch dimension)."""
+    """Qwen3 over a flat [num_tokens] or padded [batch, seq] token layout."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__(config)
@@ -122,9 +125,6 @@ class Qwen3ForCausalLM(CausalLM):
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         if config.tie_word_embeddings:
             self.lm_head.weight = self.model.embed_tokens.weight
-
-    def new_kv_cache(self) -> KVCache:
-        return KVCache(self.config.num_hidden_layers)
 
     def load_weights(self, weights: dict[str, torch.Tensor]) -> None:
         """Load a HF-format state dict into the model."""
@@ -149,7 +149,7 @@ class Qwen3ForCausalLM(CausalLM):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        kv_cache: KVCache | None = None,
+        kv_cache: KVCacheView | None = None,
     ) -> torch.Tensor:
-        """Return logits [num_tokens, vocab_size] for input_ids [num_tokens]."""
+        """Return logits [..., vocab_size] for input_ids [num_tokens] or [batch, seq]."""
         return self.lm_head(self.model(input_ids, positions, kv_cache))

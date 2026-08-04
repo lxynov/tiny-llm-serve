@@ -3,52 +3,43 @@ import torch.nn.functional as F
 from torch import nn
 
 
-class KVCache:
-    """Naive per-request KV cache.
-
-    One contiguous [seq_len, num_kv_heads, head_dim] tensor pair per layer,
-    grown by concatenation each step. To be replaced by a paged KV cache.
-    """
-
-    def __init__(self, num_layers: int) -> None:
-        self._keys: list[torch.Tensor | None] = [None] * num_layers
-        self._values: list[torch.Tensor | None] = [None] * num_layers
-
-    @property
-    def seq_len(self) -> int:
-        return 0 if self._keys[0] is None else self._keys[0].shape[0]
-
-    def append(
-        self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Append this step's k/v for a layer and return the full cached tensors."""
-        cached_k, cached_v = self._keys[layer_idx], self._values[layer_idx]
-        if cached_k is not None and cached_v is not None:
-            k = torch.cat((cached_k, k))
-            v = torch.cat((cached_v, v))
-        self._keys[layer_idx], self._values[layer_idx] = k, v
-        return k, v
-
-
 class Attention(nn.Module):
     """Causal attention via SDPA (FlashAttention on CUDA, math fallback on CPU)."""
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Attend q [q_len, num_heads, head_dim] to k/v [kv_len, num_kv_heads, head_dim].
+        """Attend q [..., q_len, num_heads, head_dim] to k/v [..., kv_len,
+        num_kv_heads, head_dim]; the leading batch dimension is optional.
 
         k/v include cached positions; num_kv_heads may divide num_heads (GQA).
-        Returns [q_len, num_heads, head_dim].
+        Without a mask, q_len == kv_len is causal prefill and q_len == 1 is
+        single-token decode over the whole cache. A boolean `attn_mask`
+        broadcastable to [..., 1, q_len, kv_len] (True = attend) covers
+        everything else, e.g. batched decode over per-sequence valid lengths.
+        Returns the same shape as q.
         """
-        q_len, kv_len = q.shape[0], k.shape[0]
-        # SDPA's is_causal anchors the mask top-left, which is only correct when the
-        # queries cover the whole sequence. The naive cache only ever needs full
-        # prefill (q_len == kv_len) or single-token decode (attend to everything).
-        if q_len > 1 and q_len != kv_len:
-            raise ValueError(f"partial prefill unsupported: {q_len=} vs {kv_len=}")
-        q, k, v = (x.transpose(0, 1).unsqueeze(0) for x in (q, k, v))
+        q_len, kv_len = q.shape[-3], k.shape[-3]
+        # SDPA's is_causal anchors the mask top-left, which is only correct when
+        # the queries cover the whole sequence (full prefill).
+        if attn_mask is None and q_len > 1 and q_len != kv_len:
+            raise ValueError(f"partial prefill needs a mask: {q_len=} vs {kv_len=}")
+        batched = q.dim() == 4
+        q, k, v = (x.transpose(-3, -2) for x in (q, k, v))
+        if not batched:
+            q, k, v = (x.unsqueeze(0) for x in (q, k, v))
         o = F.scaled_dot_product_attention(
-            q, k, v, is_causal=q_len > 1, enable_gqa=True
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            is_causal=attn_mask is None and q_len > 1,
+            enable_gqa=True,
         )
-        return o.squeeze(0).transpose(0, 1)
+        if not batched:
+            o = o.squeeze(0)
+        return o.transpose(-3, -2)
