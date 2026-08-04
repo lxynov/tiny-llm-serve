@@ -1,0 +1,151 @@
+"""Slot-reserving KV manager for batched generation.
+
+A manager owns the physical cache tensors (data plane) and the slot
+bookkeeping (control plane). Admission is the only memory decision: an
+admitted sequence reserves everything it could ever need up front, so it can
+never outgrow its reservation mid-flight. Models never touch the manager
+directly -- each engine step starts with begin_prefill/begin_decode, which
+returns a view speaking the same KVCacheView protocol as the naive
+per-request cache.
+"""
+
+import torch
+
+from tiny_llm_serve.config import ModelConfig
+from tiny_llm_serve.kv.base import KVManager
+
+
+class PreallocatedKVManager(KVManager):
+    """A fixed pool of sequence slots, each reserving `max_model_len` tokens of
+    contiguous KV per layer.
+
+    The reservation makes admitted sequences safe by construction but wastes
+    every slot token past a sequence's true length -- the waste the
+    kv_efficiency metric measures and paged attention will reclaim.
+    """
+
+    def __init__(
+        self,
+        config: ModelConfig,
+        num_slots: int,
+        max_model_len: int,
+        device: str,
+        dtype: torch.dtype,
+    ) -> None:
+        self.max_model_len = max_model_len
+        self.device = device
+        shape = (num_slots, max_model_len, config.num_key_value_heads, config.head_dim)
+        self.k_cache = [
+            torch.zeros(shape, device=device, dtype=dtype)
+            for _ in range(config.num_hidden_layers)
+        ]
+        self.v_cache = [
+            torch.zeros(shape, device=device, dtype=dtype)
+            for _ in range(config.num_hidden_layers)
+        ]
+        # Cached tokens per slot.
+        self.cached_seq_lens = torch.zeros(num_slots, dtype=torch.long, device=device)
+        self._free_slots = list(range(num_slots))
+
+    def can_admit(self, num_prompt_tokens: int) -> bool:
+        return bool(self._free_slots) and num_prompt_tokens <= self.max_model_len
+
+    def admit(self, num_prompt_tokens: int) -> int:
+        if not self.can_admit(num_prompt_tokens):
+            raise ValueError(
+                f"cannot admit a {num_prompt_tokens}-token prompt: "
+                f"{len(self._free_slots)} free slots of {self.max_model_len} tokens"
+            )
+        return self._free_slots.pop()
+
+    def free(self, slot: int) -> None:
+        if slot in self._free_slots:
+            raise ValueError(f"slot {slot} is already free")
+        self.cached_seq_lens[slot] = 0
+        self._free_slots.append(slot)
+
+    def begin_prefill(self, slots: list[int], prompt_lens: list[int]) -> "_PrefillStep":
+        slot_ids = torch.tensor(slots, device=self.device)
+        if (self.cached_seq_lens[slot_ids] != 0).any():
+            raise ValueError(f"prefill into occupied slots {slots}")
+        if max(prompt_lens) > self.max_model_len:
+            raise ValueError(f"prompt of {max(prompt_lens)} tokens exceeds a slot")
+        self.cached_seq_lens[slot_ids] = torch.tensor(prompt_lens, device=self.device)
+        return _PrefillStep(self, slot_ids)
+
+    def begin_decode(self, slots: list[int]) -> "_DecodeStep":
+        slot_ids = torch.tensor(slots, device=self.device)
+        write_pos = self.cached_seq_lens[slot_ids]
+        if (write_pos == 0).any():
+            raise ValueError(f"decode from unprefilled slots {slots}")
+        if (write_pos >= self.max_model_len).any():
+            raise RuntimeError(
+                f"out of KV capacity: a slot reached {self.max_model_len} tokens"
+            )
+        self.cached_seq_lens[slot_ids] = write_pos + 1
+        return _DecodeStep(self, slot_ids, write_pos)
+
+
+class _PrefillStep:
+    """Writes a right-padded [batch, padded_len, ...] prompt block into fresh
+    slots.
+
+    attn_mask stays None: with right padding, causal masking alone keeps every
+    real query from attending pad keys, and pad rows' outputs are discarded.
+    The pad k/v written past each prompt are stale until decode overwrites
+    them; decode's mask hides them meanwhile.
+    """
+
+    attn_mask: torch.Tensor | None = None
+
+    def __init__(self, manager: PreallocatedKVManager, slot_ids: torch.Tensor) -> None:
+        self._manager = manager
+        self._slot_ids = slot_ids
+
+    def append(
+        self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        padded_len = k.shape[1]
+        self._manager.k_cache[layer_idx][self._slot_ids, :padded_len] = k
+        self._manager.v_cache[layer_idx][self._slot_ids, :padded_len] = v
+        return k, v
+
+
+class _DecodeStep:
+    """Appends one token per sequence at each sequence's current length.
+
+    Returned k/v are cache slices padded to the longest sequence in the step;
+    attn_mask marks which positions are real per row, hiding both stale pad
+    entries and shorter sequences' tails.
+    """
+
+    def __init__(
+        self,
+        manager: PreallocatedKVManager,
+        slot_ids: torch.Tensor,
+        write_pos: torch.Tensor,
+    ) -> None:
+        self._manager = manager
+        self._slot_ids = slot_ids
+        self._write_pos = write_pos
+        self._kv_len = int(write_pos.max()) + 1
+        keys_valid = (
+            torch.arange(self._kv_len, device=manager.device) <= write_pos[:, None]
+        )
+        self.attn_mask: torch.Tensor | None = keys_valid.view(
+            len(slot_ids), 1, 1, self._kv_len
+        )
+
+    def append(
+        self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if k.shape[1] != 1:
+            raise ValueError(f"decode appends one token per sequence, got {k.shape[1]}")
+        k_cache = self._manager.k_cache[layer_idx]
+        v_cache = self._manager.v_cache[layer_idx]
+        k_cache[self._slot_ids, self._write_pos] = k[:, 0]
+        v_cache[self._slot_ids, self._write_pos] = v[:, 0]
+        return (
+            k_cache[self._slot_ids, : self._kv_len],
+            v_cache[self._slot_ids, : self._kv_len],
+        )
