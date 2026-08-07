@@ -92,7 +92,10 @@ does not depend on prompt content); outputs are forced to exact lengths with
    tokenizer time never pollutes engine numbers.
 3. **Warm-up + repeats.** One untimed warm-up pass, then ≥3 timed passes
    (default); report the median. CPU smoke runs may use fewer repeats, GPU
-   numbers may not.
+   numbers may not. Each timed pass is bracketed by a device barrier
+   (`torch.{cuda,mps}.synchronize`): accelerator work is enqueued
+   asynchronously, so an unbracketed timer measures kernel *submission*, not
+   execution.
 4. **Results are data.** Every run writes one JSON record under
    `benchmarks/results/`; headline numbers must be reproducible from a
    committed record. Each record carries the git commit and whether the tree
