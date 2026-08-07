@@ -65,6 +65,13 @@ def run_static(llm: LLM, requests: list[Request], batch_size: int) -> list[list[
     return outputs
 
 
+def synchronize(device: str) -> None:
+    if device == "cuda":
+        torch.cuda.synchronize()
+    elif device == "mps":
+        torch.mps.synchronize()
+
+
 def git_state() -> tuple[str | None, bool | None]:
     """The commit and whether the tree was dirty.
 
@@ -145,8 +152,10 @@ def bench(args: argparse.Namespace) -> dict:
     times = []
     outputs: list[list[int]] = []
     for _ in range(args.repeats):
+        synchronize(device)
         start = time.perf_counter()
         outputs = runner()
+        synchronize(device)
         times.append(time.perf_counter() - start)
 
     prompt_tokens = sum(len(r.prompt_ids) for r in requests)
