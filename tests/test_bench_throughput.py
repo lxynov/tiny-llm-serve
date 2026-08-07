@@ -39,6 +39,9 @@ def test_harness_writes_a_complete_record(tiny_checkpoint_path, tmp_path):
     # The naive sequential cache reserves exactly what it stores.
     assert metrics["kv_efficiency"] == 1.0
     assert metrics["peak_concurrent_seqs"] == 1
+    # Both memory peaks are recorded, and both are null off-GPU.
+    assert metrics["peak_gpu_memory_allocated_bytes"] is None
+    assert metrics["peak_gpu_memory_reserved_bytes"] is None
 
 
 def test_static_mode_drains_the_workload_in_waves(tiny_checkpoint_path, tmp_path):
