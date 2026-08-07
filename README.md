@@ -90,7 +90,11 @@ does not depend on prompt content); outputs are forced to exact lengths with
    rerun of the baseline.
 2. **Pre-tokenized prompts.** The engine consumes token ids directly, so
    tokenizer time never pollutes engine numbers.
-3. **Results are data.** Every run writes one JSON record under
+3. **Bracket the timed pass.** A device barrier
+   (`torch.{cuda,mps}.synchronize`) sits on either side of the timer:
+   accelerator work is enqueued asynchronously, so an unbracketed timer
+   measures kernel *submission*, not execution.
+4. **Results are data.** Every run writes one JSON record under
    `benchmarks/results/`; headline numbers must be reproducible from a
    committed record. Each record carries the git commit and whether the tree
    was dirty, plus the environment that produced it — OS, Python, torch, CPU
