@@ -194,8 +194,11 @@ def bench(args: argparse.Namespace) -> dict:
             "output_tokens": output_tokens,
             "output_tok_s": output_tokens / wall,
             "total_tok_s": (prompt_tokens + output_tokens) / wall,
-            "peak_gpu_memory_bytes": (
+            "peak_gpu_memory_allocated_bytes": (
                 torch.cuda.max_memory_allocated() if device == "cuda" else None
+            ),
+            "peak_gpu_memory_reserved_bytes": (
+                torch.cuda.max_memory_reserved() if device == "cuda" else None
             ),
             "peak_concurrent_seqs": peak_concurrent_seqs,
             "kv_efficiency": used_kv_tokens / reserved_kv_tokens,

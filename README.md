@@ -78,7 +78,8 @@ does not depend on prompt content); outputs are forced to exact lengths with
 | `wall_time_s` | Wall time of a full workload pass |
 | `output_tok_s` | Generated tokens ÷ wall time |
 | `total_tok_s` | (Prompt + generated tokens) ÷ wall time |
-| `peak_gpu_memory_bytes` | `torch.cuda.max_memory_allocated()` over the timed pass (null off-GPU) |
+| `peak_gpu_memory_allocated_bytes` | `torch.cuda.max_memory_allocated()` over the timed pass (null off-GPU): bytes held by live tensors |
+| `peak_gpu_memory_reserved_bytes` | `torch.cuda.max_memory_reserved()` over the same pass: bytes the caching allocator holds from the driver, including freed-but-cached blocks and fragmentation. Always ≥ allocated, and the one OOM is decided by — so it is the number that predicts a sweep's capacity ceiling, and it is what `nvidia-smi` shows minus the CUDA context |
 | `peak_concurrent_seqs` | Most sequences in flight at once |
 | `kv_efficiency` | KV tokens actually used ÷ KV tokens reserved. Sequential mode's naive cache reserves exactly what it uses (1.0); preallocated batching reserves whole slots up front, and this ratio is the number that indicts it |
 
