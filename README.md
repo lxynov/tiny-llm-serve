@@ -75,9 +75,10 @@ does not depend on prompt content); outputs are forced to exact lengths with
 
 | Metric | Definition |
 |---|---|
-| `wall_time_s` | Median wall time of a full workload pass |
-| `output_tok_s` | Generated tokens ÷ median wall time |
-| `total_tok_s` | (Prompt + generated tokens) ÷ median wall time |
+| `wall_time_s` | Mean wall time of a full workload pass |
+| `wall_time_cv` | Spread of the timed passes relative to their mean (standard deviation ÷ mean); `null` for a single pass. The number that says whether the run above it can be trusted — see rule 3 |
+| `output_tok_s` | Generated tokens ÷ mean wall time. Output lengths are fixed, so this is total generated tokens ÷ total timed seconds: aggregate throughput, not an average of per-pass rates |
+| `total_tok_s` | (Prompt + generated tokens) ÷ mean wall time |
 | `peak_gpu_memory_allocated_bytes` | `torch.cuda.max_memory_allocated()` across the timed passes (null off-GPU): bytes held by live tensors |
 | `peak_gpu_memory_reserved_bytes` | `torch.cuda.max_memory_reserved()` across the same passes: bytes the caching allocator holds from the driver, including freed-but-cached blocks and fragmentation. Always ≥ allocated, and the one OOM is decided by — so it is the number that predicts a sweep's capacity ceiling, and it is what `nvidia-smi` shows minus the CUDA context |
 | `peak_concurrent_seqs` | Most sequences in flight at once |
@@ -92,7 +93,13 @@ does not depend on prompt content); outputs are forced to exact lengths with
 2. **Pre-tokenized prompts.** The engine consumes token ids directly, so
    tokenizer time never pollutes engine numbers.
 3. **Warm-up + repeats.** One untimed warm-up pass, then ≥3 timed passes
-   (default); report the median. CPU smoke runs may use fewer repeats, GPU
+   (default); report the mean, never without `wall_time_cv` beside it. Mean
+   because throughput is total work ÷ total time, and because a median would
+   quietly absorb a pass that some background process ruined instead of
+   exposing it — the spread is what exposes it, which is why the two are
+   reported together and neither is meaningful alone. Above 5% (`--noisy-cv`)
+   the harness warns on stderr: that run measured the machine's mood, so treat
+   it as scratch and repeat it. CPU smoke runs may use fewer repeats, GPU
    numbers may not. Each timed pass is bracketed by a device barrier
    (`torch.{cuda,mps}.synchronize`): accelerator work is enqueued
    asynchronously, so an unbracketed timer measures kernel *submission*, not
