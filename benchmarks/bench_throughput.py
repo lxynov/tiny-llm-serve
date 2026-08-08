@@ -3,7 +3,7 @@
 Runs a named workload through the engine and writes a JSON record to
 benchmarks/results/, following the protocol in the README: pre-tokenized
 prompts, ignore_eos so output lengths are exact, one untimed warm-up pass,
-and the median wall time over repeated timed passes.
+and the mean wall time over repeated timed passes with its spread beside it.
 
 Usage (from the repo root):
     python -m benchmarks.bench_throughput --model Qwen/Qwen3-0.6B \
@@ -16,6 +16,7 @@ import os
 import platform
 import statistics
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -63,6 +64,12 @@ def run_static(llm: LLM, requests: list[Request], batch_size: int) -> list[list[
             [r.prompt_ids for r in wave], params, max_model_len=wave_model_len(wave)
         )
     return outputs
+
+
+def dispersion(times: list[float]) -> float | None:
+    if len(times) < 2:
+        return None
+    return statistics.stdev(times) / statistics.fmean(times)
 
 
 def synchronize(device: str) -> None:
@@ -170,7 +177,7 @@ def bench(args: argparse.Namespace) -> dict:
         # The naive sequential cache grows exactly with what it stores.
         reserved_kv_tokens = used_kv_tokens
         peak_concurrent_seqs = 1
-    wall = statistics.median(times)
+    wall = statistics.fmean(times)
     commit, dirty = git_state()
     now = datetime.now(timezone.utc)
     return {
@@ -197,6 +204,7 @@ def bench(args: argparse.Namespace) -> dict:
         },
         "metrics": {
             "wall_time_s": wall,
+            "wall_time_cv": dispersion(times),
             "wall_times_s": times,
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
@@ -226,6 +234,9 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--batch-size", type=int, default=8, help="static mode only")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument(
+        "--noisy-cv", type=float, default=0.05, help="warn above this spread"
+    )
     parser.add_argument("--device", default=None, help="default: auto-select")
     parser.add_argument("--dtype", choices=sorted(DTYPES), default="float32")
     parser.add_argument("--output-dir", type=Path, default=RESULTS_DIR)
@@ -237,6 +248,13 @@ def main(argv: list[str] | None = None) -> dict:
     path.write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record["metrics"], indent=2))
     print(f"wrote {path}")
+    cv = record["metrics"]["wall_time_cv"]
+    if cv is not None and cv > args.noisy_cv:
+        print(
+            f"warning: wall time varied {cv:.1%} across passes "
+            f"(over {args.noisy_cv:.1%}); treat as a scratch run and repeat it",
+            file=sys.stderr,
+        )
     return record
 
 
