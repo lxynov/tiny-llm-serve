@@ -11,6 +11,11 @@ class CausalLM(nn.Module):
     Operates on a flat [num_tokens] or padded [batch, seq] token layout and
     appends KV to whatever KVCacheView it is handed, so cache backends stay
     an engine concern and the loader and engine stay model-agnostic.
+
+    `forward`'s optional `logits_indices` selects the positions the LM head
+    scores -- token indices [k] in the flat layout, one per row [batch] in the
+    padded one -- so prefill need not project a [..., seq, vocab_size] tensor
+    to sample one row per sequence.
     """
 
     def __init__(self, config: ModelConfig) -> None:
@@ -26,5 +31,6 @@ class CausalLM(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         kv_cache: KVCacheView | None = None,
+        logits_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         raise NotImplementedError
