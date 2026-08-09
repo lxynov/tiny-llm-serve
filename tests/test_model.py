@@ -59,6 +59,31 @@ def test_batched_forward_matches_per_sequence(device):
 
 
 @backends("all")
+def test_logits_indices_select_the_same_rows_as_a_full_forward(device):
+    """Scoring only the wanted positions is exact, in both token layouts."""
+    torch.manual_seed(0)
+    config = tiny_config()
+    model = Qwen3ForCausalLM(config).eval().to(device)
+    input_ids = torch.randint(0, config.vocab_size, (3, 6), device=device)
+    positions = torch.arange(6, device=device).expand(3, 6)
+    lens = torch.tensor([6, 4, 2], device=device)  # ragged: not all the last row
+
+    with torch.no_grad():
+        padded = model(input_ids, positions)
+        padded_selected = model(input_ids, positions, logits_indices=lens - 1)
+        flat = model(input_ids[0], positions[0])
+        flat_selected = model(
+            input_ids[0], positions[0], logits_indices=torch.tensor([-1], device=device)
+        )
+
+    rows = torch.arange(3, device=device)
+    torch.testing.assert_close(
+        padded_selected, padded[rows, lens - 1], atol=1e-4, rtol=1e-4
+    )
+    torch.testing.assert_close(flat_selected, flat[-1:], atol=1e-4, rtol=1e-4)
+
+
+@backends("all")
 def test_incremental_decode_matches_full_forward(device):
     torch.manual_seed(0)
     config = tiny_config()
