@@ -150,6 +150,15 @@ class Qwen3ForCausalLM(CausalLM):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         kv_cache: KVCacheView | None = None,
+        logits_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return logits [..., vocab_size] for input_ids [num_tokens] or [batch, seq]."""
-        return self.lm_head(self.model(input_ids, positions, kv_cache))
+        """Return logits [..., vocab_size] for input_ids [num_tokens] or [batch,
+        seq] -- every position, or only the `logits_indices` ones."""
+        hidden = self.model(input_ids, positions, kv_cache)
+        if logits_indices is not None:
+            if hidden.dim() == 2:
+                hidden = hidden[logits_indices]
+            else:
+                rows = torch.arange(hidden.shape[0], device=hidden.device)
+                hidden = hidden[rows, logits_indices]
+        return self.lm_head(hidden)

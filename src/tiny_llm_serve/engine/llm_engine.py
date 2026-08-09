@@ -44,11 +44,13 @@ class LLM:
         seen_ids = torch.tensor(prompt_ids, dtype=torch.long, device=self.device)
         kv_cache = NaiveKVCache(self.model.config.num_hidden_layers)
         positions = torch.arange(len(seen_ids), device=self.device)
-        logits = self.model(seen_ids, positions, kv_cache)
+        step_logits = self.model(
+            seen_ids, positions, kv_cache, torch.tensor([-1], device=self.device)
+        )
         output_ids: list[int] = []
         for _ in range(params.max_tokens):
             next_id = self.sampler(
-                logits[-1:], params, seen_ids.unsqueeze(0), generator
+                step_logits, params, seen_ids.unsqueeze(0), generator
             )
             if not params.ignore_eos and next_id.item() == self.tokenizer.eos_token_id:
                 break
@@ -62,7 +64,7 @@ class LLM:
                 if any(s in text for s in params.stop):
                     break
             positions = torch.tensor([kv_cache.seq_len], device=self.device)
-            logits = self.model(next_id, positions, kv_cache)
+            step_logits = self.model(next_id, positions, kv_cache)
         return output_ids
 
     def generate(self, prompt: str, params: SamplingParams | None = None) -> str:
@@ -122,12 +124,10 @@ class LLM:
             input_ids[i, : len(prompt)] = torch.tensor(prompt, dtype=torch.long)
         input_ids = input_ids.to(self.device)
         positions = torch.arange(padded_len, device=self.device).expand(num_seqs, -1)
-        logits = self.model(
-            input_ids, positions, manager.begin_prefill(slots, prompt_lens)
-        )
         lens = torch.tensor(prompt_lens, device=self.device)
-        rows = torch.arange(num_seqs, device=self.device)
-        step_logits = logits[rows, lens - 1]  # each row's last real token
+        step_logits = self.model(
+            input_ids, positions, manager.begin_prefill(slots, prompt_lens), lens - 1
+        )
 
         # Track seen ids for the repetition penalty, padding each row with its
         # own first token: duplicate ids are harmless to the penalty (the same
