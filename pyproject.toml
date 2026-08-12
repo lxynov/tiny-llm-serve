@@ -41,6 +41,9 @@ unused-ignore = true
 
 [dependency-groups]
 dev = [
+    # Reporting only: benchmarks/report.py draws the sweep plots. The library
+    # and the harness that produces the records do not need it.
+    "matplotlib>=3.10.0",
     "pdbpp>=0.12.1",
     "pyrefly>=1.1.1",
     "pytest>=9.1.1",
