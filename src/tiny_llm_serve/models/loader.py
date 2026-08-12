@@ -28,6 +28,18 @@ def resolve_device(device: str | None = None) -> str:
     return "cpu"
 
 
+def synchronize(device: str) -> None:
+    """Block until `device` has finished the work already submitted to it.
+
+    Accelerator work is enqueued asynchronously, so a clock read that is not
+    preceded by a barrier times kernel *submission* rather than execution.
+    """
+    if device.startswith("cuda"):
+        torch.cuda.synchronize()
+    elif device.startswith("mps"):
+        torch.mps.synchronize()
+
+
 def load_config(model_path: Path) -> ModelConfig:
     return ModelConfig.from_json(model_path / "config.json")
 
