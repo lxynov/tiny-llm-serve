@@ -52,6 +52,25 @@ def waves(requests: list[Request], batch_size: int) -> list[list[Request]]:
     return [requests[i : i + batch_size] for i in range(0, len(requests), batch_size)]
 
 
+def check_whole_waves(num_requests: int, batch_size: int) -> None:
+    """Reject a request count that leaves a short final wave.
+
+    A ragged tail makes the record lie: at 64 requests and batch size 128 the
+    engine runs a single wave of 64 while `config.batch_size` says 128, and a
+    batch-size sweep built on that compares points that never ran the batch
+    size they are plotted against. Demanding divisibility also keeps the
+    workload byte-identical across a sweep, which is what makes a delta
+    attributable to the batch size (README rule 1).
+    """
+    if num_requests % batch_size:
+        raise ValueError(
+            f"--num-requests {num_requests} is not a multiple of --batch-size "
+            f"{batch_size}: the last wave would run "
+            f"{num_requests % batch_size} sequences but be recorded as "
+            f"{batch_size}. Use a request count divisible by the batch size."
+        )
+
+
 def wave_model_len(wave: list[Request]) -> int:
     return max(len(r.prompt_ids) for r in wave) + max(r.output_len for r in wave)
 
@@ -241,6 +260,9 @@ def environment(device: str) -> dict:
 
 
 def bench(args: argparse.Namespace) -> dict:
+    if args.mode == "static":
+        # Before loading the model: a config error should not cost a 16 GB read.
+        check_whole_waves(args.num_requests, args.batch_size)
     device = loader.resolve_device(args.device)
     llm = LLM(args.model, device=device, dtype=DTYPES[args.dtype])
     requests = build_workload(
@@ -326,6 +348,11 @@ def bench(args: argparse.Namespace) -> dict:
         "config": {
             "dtype": args.dtype,
             "batch_size": args.batch_size if args.mode == "static" else None,
+            # Every wave is exactly batch_size (check_whole_waves), so the
+            # count is all a reader needs to reconstruct the schedule.
+            "num_waves": (
+                args.num_requests // args.batch_size if args.mode == "static" else None
+            ),
         },
         "metrics": {
             "wall_time_s": wall,
