@@ -82,6 +82,8 @@ does not depend on prompt content); outputs are forced to exact lengths with
 | `s_per_decode_step` | `decode_time_s ÷ decode_steps`. The cleanest diagnostic in a batch-size sweep: roughly flat while host dispatch owns the step, rising once the step is genuinely bandwidth-bound, and the batch size where it turns is where batching stops being free |
 | `output_tok_s` | Generated tokens ÷ mean wall time. Output lengths are fixed, so this is total generated tokens ÷ total timed seconds: aggregate throughput, not an average of per-pass rates |
 | `total_tok_s` | (Prompt + generated tokens) ÷ mean wall time |
+| `weight_bytes` | Bytes of model parameters the device holds. Tied embeddings are one storage under two names, so the vocabulary table is counted once |
+| `kv_bytes_reserved` | `kv_efficiency`'s denominator in bytes: reserved KV tokens × (2 × layers × KV heads × head_dim × dtype bytes). Exact by construction, unlike the two peaks below, which the caching allocator reports after the fact — so `weight_bytes + kv_bytes_reserved` predicts a run's floor before it is launched |
 | `peak_gpu_memory_allocated_bytes` | `torch.cuda.max_memory_allocated()` across the timed passes (null off-GPU): bytes held by live tensors |
 | `peak_gpu_memory_reserved_bytes` | `torch.cuda.max_memory_reserved()` across the same passes: bytes the caching allocator holds from the driver, including freed-but-cached blocks and fragmentation. Always ≥ allocated, and the one OOM is decided by — so it is the number that predicts a sweep's capacity ceiling, and it is what `nvidia-smi` shows minus the CUDA context |
 | `peak_concurrent_seqs` | Most sequences in flight at once |
