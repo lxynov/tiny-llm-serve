@@ -196,6 +196,28 @@ def test_mbu_is_null_without_a_known_ceiling(tiny_checkpoint_path, tmp_path):
     assert record["metrics"]["mbu"] is None
 
 
+def test_record_describes_the_workload_it_measured(tiny_checkpoint_path, tmp_path):
+    record = main(
+        bench_args(
+            tiny_checkpoint_path,
+            tmp_path,
+            **{"--workload": "mixed-out", "--num-requests": "8", "--repeats": "1"},
+        )
+    )
+
+    assert record["load"] == "offline-drain"
+    stats = record["workload_stats"]
+    # mixed-out holds prompts at 512 and varies only the output length.
+    assert stats["prompt_len"] == {"mean": 512, "median": 512, "min": 512, "max": 512}
+    requests = build_workload("mixed-out", 8, 128, seed=0)
+    lengths = [r.output_len for r in requests]
+    assert stats["output_len"]["min"] == min(lengths)
+    assert stats["output_len"]["max"] == max(lengths)
+    # The tail is the point of this workload: the longest output sets how long
+    # every sequence in its wave is held open.
+    assert stats["output_len"]["max"] > stats["output_len"]["median"]
+
+
 def test_weight_bytes_counts_tied_storage_once():
     """Tied embeddings are one storage under two names -- and one HBM cost."""
     shared = torch.nn.Linear(4, 4, bias=False)

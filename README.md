@@ -71,6 +71,17 @@ does not depend on prompt content); outputs are forced to exact lengths with
 | `mixed-out` | 512 | log-normal, median 64, clamped [16, 512] | Static batching's tail waste: everyone waits for the longest output |
 | `sharegpt-like` | log-normal, median 128, clamped [16, 1024] | same | Long-tailed realistic lengths; preallocation waste |
 
+Records carry `workload_stats` — prompt and output length mean, median, min and
+max — because a name and a seed reproduce a workload only while the generator
+behind that name is unchanged, and the numbers outlive it.
+
+They also carry `"load": "offline-drain"`: every request exists before the timer
+starts and the engine drains them as fast as it can. Nothing arrives, nothing
+queues, and request latency is therefore pinned to throughput rather than
+independent of it. Load shaped by an arrival rate lands with continuous
+batching, and will report fields that mean something different under the same
+names — this one keeps the two apart.
+
 ### Metrics
 
 | Metric | Definition |

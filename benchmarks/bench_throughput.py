@@ -147,6 +147,32 @@ def decode_bytes_read(
     return total
 
 
+def length_stats(lengths: list[int]) -> dict:
+    """Max rather than a high percentile: at these request counts a p99 is the
+    max wearing a disguise, and the max is what actually sizes a wave's KV
+    reservation."""
+    return {
+        "mean": statistics.fmean(lengths),
+        "median": statistics.median(lengths),
+        "min": min(lengths),
+        "max": max(lengths),
+    }
+
+
+def workload_stats(requests: list[Request]) -> dict:
+    """The length distributions a run actually measured.
+
+    A name and a seed reproduce a workload only for as long as the generator
+    behind the name is unchanged. These numbers outlive it, and they are what
+    a later reader needs to tell whether two records measured the same shape
+    of work.
+    """
+    return {
+        "prompt_len": length_stats([len(r.prompt_ids) for r in requests]),
+        "output_len": length_stats([r.output_len for r in requests]),
+    }
+
+
 def dispersion(times: list[float]) -> float | None:
     if len(times) < 2:
         return None
@@ -287,7 +313,14 @@ def bench(args: argparse.Namespace) -> dict:
         "device": device,
         "environment": env,
         "engine_mode": args.mode,
+        # How the work was offered, not how it was served. Every request here
+        # exists before the timer starts and the engine drains them as fast as
+        # it can, so latency is pinned to throughput and no request ever waits
+        # on an arrival. Once requests arrive at a rate, the same field names
+        # will mean something else -- this one keeps the two kinds apart.
+        "load": "offline-drain",
         "workload": args.workload,
+        "workload_stats": workload_stats(requests),
         "num_requests": args.num_requests,
         "seed": args.seed,
         "config": {
