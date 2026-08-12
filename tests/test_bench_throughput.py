@@ -3,7 +3,12 @@ import json
 import pytest
 import torch
 
-from benchmarks.bench_throughput import main, weight_bytes
+from benchmarks.bench_throughput import (
+    decode_bytes_read,
+    decode_groups,
+    main,
+    weight_bytes,
+)
 from benchmarks.workloads import build_workload
 
 
@@ -142,6 +147,53 @@ def test_byte_accounting_matches_the_closed_form(tiny_checkpoint_path, tmp_path)
     # One wave of 2 slots, each reserving 512 prompt + 128 output tokens.
     assert metrics["kv_bytes_reserved"] == 2 * (512 + 128) * per_token
     assert metrics["weight_bytes"] > 0
+
+
+@pytest.mark.parametrize("mode, batch_size", [("static", "2"), ("sequential", "8")])
+def test_decode_step_model_matches_what_the_engine_ran(
+    tiny_checkpoint_path, tmp_path, mode, batch_size
+):
+    """The roofline counts bytes from a model of the decode loop; if that model
+    disagreed with the loop, MBU would be wrong in a way nothing else shows."""
+    record = main(
+        bench_args(
+            tiny_checkpoint_path,
+            tmp_path,
+            **{
+                "--workload": "mixed-out",
+                "--num-requests": "4",
+                "--mode": mode,
+                "--batch-size": batch_size,
+                "--repeats": "1",
+                "--warmup": "0",
+            },
+        )
+    )
+
+    requests = build_workload("mixed-out", 4, 128, seed=0)
+    groups = decode_groups(requests, mode, int(batch_size))
+    assert sum(steps for _, _, steps in groups) == record["metrics"]["decode_steps"]
+
+
+def test_decode_bytes_charge_the_weights_once_per_step():
+    """The batching win in bytes: sixteen sequences do not read sixteen copies
+    of the weights, so the byte total grows far slower than the batch."""
+    one = decode_bytes_read([(1, 0, 4)], weights=1000, kv_per_token=0)
+    sixteen = decode_bytes_read([(16, 0, 4)], weights=1000, kv_per_token=0)
+
+    assert one == sixteen == 4 * 1000
+
+
+def test_decode_bytes_count_each_sequences_growing_window():
+    """Four steps from a window of 10 read 11 + 12 + 13 + 14 tokens."""
+    assert decode_bytes_read([(2, 10, 4)], weights=0, kv_per_token=1) == 2 * 50
+
+
+def test_mbu_is_null_without_a_known_ceiling(tiny_checkpoint_path, tmp_path):
+    record = main(bench_args(tiny_checkpoint_path, tmp_path, **{"--repeats": "1"}))
+
+    assert record["metrics"]["decode_bytes_read"] > 0
+    assert record["metrics"]["mbu"] is None
 
 
 def test_weight_bytes_counts_tied_storage_once():
