@@ -76,6 +76,9 @@ does not depend on prompt content); outputs are forced to exact lengths with
 | Metric | Definition |
 |---|---|
 | `wall_time_s` | Wall time of a full workload pass |
+| `prefill_time_s` / `decode_time_s` | Wall time in each phase, which together account for the pass. Prefill and decode are different machines — prefill is compute-bound (one large matmul over every prompt token at once), decode is memory-bandwidth-bound (all the weights re-read to produce a single token per sequence) — so a single wall time averages two regimes and hides both. Prefill covers everything up to and including the prompt forward pass, which is where a wave's KV slot pool is allocated; decode covers the step loop and its sampling. Measuring the split costs two extra device barriers per request or wave, not one per step |
+| `decode_steps` | Decode forward passes actually run. A wave's first token comes from the prefill logits, so a wave of *n*-token outputs runs *n*−1 of them |
+| `s_per_decode_step` | `decode_time_s ÷ decode_steps`. The cleanest diagnostic in a batch-size sweep: roughly flat while host dispatch owns the step, rising once the step is genuinely bandwidth-bound, and the batch size where it turns is where batching stops being free |
 | `output_tok_s` | Generated tokens ÷ wall time |
 | `total_tok_s` | (Prompt + generated tokens) ÷ wall time |
 | `peak_gpu_memory_allocated_bytes` | `torch.cuda.max_memory_allocated()` over the timed pass (null off-GPU): bytes held by live tensors |
