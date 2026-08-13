@@ -1,6 +1,7 @@
 import argparse
 import sys
-from dataclasses import replace
+import time
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -8,6 +9,13 @@ from tiny_llm_serve.engine.sampling_params import SamplingParams
 from tiny_llm_serve.kv import NaiveKVCache, PreallocatedKVManager
 from tiny_llm_serve.layers.sampler import Sampler
 from tiny_llm_serve.models import loader
+
+
+@dataclass
+class Timing:
+    prefill_s: float = 0.0
+    decode_s: float = 0.0
+    decode_steps: int = 0
 
 
 class LLM:
@@ -20,9 +28,17 @@ class LLM:
         self.sampler = Sampler()
         self.device = device
 
+    def _now(self) -> float:
+        """A clock read the device has actually caught up to."""
+        loader.synchronize(self.device)
+        return time.perf_counter()
+
     @torch.inference_mode()
     def generate_ids(
-        self, prompt: str | list[int], params: SamplingParams | None = None
+        self,
+        prompt: str | list[int],
+        params: SamplingParams | None = None,
+        timing: Timing | None = None,
     ) -> list[int]:
         """Decode the completion token ids for `prompt` (text or token ids).
 
@@ -41,12 +57,16 @@ class LLM:
         prompt_ids = (
             self.tokenizer.encode(prompt) if isinstance(prompt, str) else prompt
         )
+        start = prefill_end = self._now() if timing is not None else 0.0
         seen_ids = torch.tensor(prompt_ids, dtype=torch.long, device=self.device)
         kv_cache = NaiveKVCache(self.model.config.num_hidden_layers)
         positions = torch.arange(len(seen_ids), device=self.device)
         step_logits = self.model(
             seen_ids, positions, kv_cache, torch.tensor([-1], device=self.device)
         )
+        if timing is not None:
+            prefill_end = self._now()
+            timing.prefill_s += prefill_end - start
         output_ids: list[int] = []
         for _ in range(params.max_tokens):
             next_id = self.sampler(
@@ -65,6 +85,10 @@ class LLM:
                     break
             positions = torch.tensor([kv_cache.seq_len], device=self.device)
             step_logits = self.model(next_id, positions, kv_cache)
+            if timing is not None:
+                timing.decode_steps += 1
+        if timing is not None:
+            timing.decode_s += self._now() - prefill_end
         return output_ids
 
     def generate(self, prompt: str, params: SamplingParams | None = None) -> str:
@@ -85,6 +109,7 @@ class LLM:
         prompts: list[list[int]],
         params: SamplingParams | list[SamplingParams] | None = None,
         max_model_len: int | None = None,
+        timing: Timing | None = None,
     ) -> list[list[int]]:
         """Decode a static batch: one padded prefill, then lockstep decode.
 
@@ -109,6 +134,7 @@ class LLM:
             # batch drains, so every slot must fit the longest prompt plus the
             # largest budget, not just its own sequence.
             max_model_len = max(prompt_lens) + max(p.max_tokens for p in params_list)
+        start = prefill_end = self._now() if timing is not None else 0.0
         manager = PreallocatedKVManager(
             self.model.config,
             num_slots=len(prompts),
@@ -128,6 +154,9 @@ class LLM:
         step_logits = self.model(
             input_ids, positions, manager.begin_prefill(slots, prompt_lens), lens - 1
         )
+        if timing is not None:
+            prefill_end = self._now()
+            timing.prefill_s += prefill_end - start
 
         # Track seen ids for the repetition penalty, padding each row with its
         # own first token: duplicate ids are harmless to the penalty (the same
@@ -163,6 +192,10 @@ class LLM:
             )
             step_logits = logits[:, 0]
             lens = lens + 1
+            if timing is not None:
+                timing.decode_steps += 1
+        if timing is not None:
+            timing.decode_s += self._now() - prefill_end
         return outputs
 
     def generate_batch(
