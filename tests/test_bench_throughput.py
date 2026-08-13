@@ -1,8 +1,9 @@
 import json
 
 import pytest
+import torch
 
-from benchmarks.bench_throughput import main
+from benchmarks.bench_throughput import main, weight_bytes
 from benchmarks.workloads import build_workload
 
 
@@ -112,3 +113,34 @@ def test_sequential_mode_times_every_request(tiny_checkpoint_path, tmp_path):
     assert metrics["decode_steps"] == 2 * 128
     phases = metrics["prefill_time_s"] + metrics["decode_time_s"]
     assert phases == pytest.approx(metrics["wall_time_s"], rel=0.05)
+
+
+def test_byte_accounting_matches_the_closed_form(tiny_checkpoint_path, tmp_path):
+    record = main(
+        bench_args(
+            tiny_checkpoint_path,
+            tmp_path,
+            **{
+                "--num-requests": "2",
+                "--mode": "static",
+                "--batch-size": "2",
+            },
+        )
+    )
+
+    metrics = record["metrics"]
+    # The tiny config: 2 layers x 2 KV heads x 8 head_dim, keys and values,
+    # float32 -- 256 bytes per cached token.
+    per_token = 2 * 2 * 2 * 8 * 4
+    # One wave of 2 slots, each reserving 512 prompt + 128 output tokens.
+    assert metrics["kv_bytes_reserved"] == 2 * (512 + 128) * per_token
+    assert metrics["weight_bytes"] > 0
+
+
+def test_weight_bytes_counts_tied_storage_once():
+    """Tied embeddings are one storage under two names -- and one HBM cost."""
+    shared = torch.nn.Linear(4, 4, bias=False)
+    tied = torch.nn.Linear(4, 4, bias=False)
+    tied.weight = shared.weight
+
+    assert weight_bytes(torch.nn.Sequential(shared, tied)) == 4 * 4 * 4
