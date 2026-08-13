@@ -23,7 +23,7 @@ from pathlib import Path
 import torch
 
 from benchmarks.workloads import WORKLOADS, Request, build_workload
-from tiny_llm_serve.engine.llm_engine import LLM
+from tiny_llm_serve.engine.llm_engine import LLM, Timing
 from tiny_llm_serve.engine.sampling_params import SamplingParams
 from tiny_llm_serve.models import loader
 
@@ -31,14 +31,16 @@ DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
 RESULTS_DIR = Path(__file__).parent / "results"
 
 
-def run_sequential(llm: LLM, requests: list[Request]) -> list[list[int]]:
+def run_sequential(
+    llm: LLM, requests: list[Request], timing: Timing | None = None
+) -> list[list[int]]:
     """The batch=1 floor: one request at a time over the naive KV cache."""
     outputs = []
     for request in requests:
         params = SamplingParams(
             temperature=0.0, max_tokens=request.output_len, ignore_eos=True
         )
-        outputs.append(llm.generate_ids(request.prompt_ids, params))
+        outputs.append(llm.generate_ids(request.prompt_ids, params, timing=timing))
     return outputs
 
 
@@ -50,7 +52,9 @@ def wave_model_len(wave: list[Request]) -> int:
     return max(len(r.prompt_ids) for r in wave) + max(r.output_len for r in wave)
 
 
-def run_static(llm: LLM, requests: list[Request], batch_size: int) -> list[list[int]]:
+def run_static(
+    llm: LLM, requests: list[Request], batch_size: int, timing: Timing | None = None
+) -> list[list[int]]:
     """Static batching over preallocated KV slots, one wave at a time."""
     outputs = []
     for wave in waves(requests, batch_size):
@@ -59,16 +63,12 @@ def run_static(llm: LLM, requests: list[Request], batch_size: int) -> list[list[
             for r in wave
         ]
         outputs += llm.generate_batch_ids(
-            [r.prompt_ids for r in wave], params, max_model_len=wave_model_len(wave)
+            [r.prompt_ids for r in wave],
+            params,
+            max_model_len=wave_model_len(wave),
+            timing=timing,
         )
     return outputs
-
-
-def synchronize(device: str) -> None:
-    if device == "cuda":
-        torch.cuda.synchronize()
-    elif device == "mps":
-        torch.mps.synchronize()
 
 
 def git_state() -> tuple[str | None, bool | None]:
@@ -139,17 +139,20 @@ def bench(args: argparse.Namespace) -> dict:
         args.workload, args.num_requests, llm.model.config.vocab_size, args.seed
     )
 
-    def runner() -> list[list[int]]:
+    def runner(timing: Timing | None = None) -> list[list[int]]:
         if args.mode == "static":
-            return run_static(llm, requests, args.batch_size)
-        return run_sequential(llm, requests)
+            return run_static(llm, requests, args.batch_size, timing)
+        return run_sequential(llm, requests, timing)
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
-    synchronize(device)
+    # One Timing for the pass: the generate calls accumulate into it, so it
+    # ends up holding the pass's totals over every request or wave.
+    timing = Timing()
+    loader.synchronize(device)
     start = time.perf_counter()
-    outputs = runner()
-    synchronize(device)
+    outputs = runner(timing)
+    loader.synchronize(device)
     wall = time.perf_counter() - start
 
     prompt_tokens = sum(len(r.prompt_ids) for r in requests)
@@ -164,6 +167,8 @@ def bench(args: argparse.Namespace) -> dict:
         # The naive sequential cache grows exactly with what it stores.
         reserved_kv_tokens = used_kv_tokens
         peak_concurrent_seqs = 1
+    decode_time = timing.decode_s
+    decode_steps = timing.decode_steps
     commit, dirty = git_state()
     now = datetime.now(timezone.utc)
     return {
@@ -190,6 +195,10 @@ def bench(args: argparse.Namespace) -> dict:
         },
         "metrics": {
             "wall_time_s": wall,
+            "prefill_time_s": timing.prefill_s,
+            "decode_time_s": decode_time,
+            "decode_steps": decode_steps,
+            "s_per_decode_step": decode_time / decode_steps if decode_steps else None,
             "prompt_tokens": prompt_tokens,
             "output_tokens": output_tokens,
             "output_tok_s": output_tokens / wall,

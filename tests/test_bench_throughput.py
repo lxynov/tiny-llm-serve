@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from benchmarks.bench_throughput import main
 from benchmarks.workloads import build_workload
 
@@ -66,3 +68,47 @@ def test_static_mode_drains_the_workload_in_waves(tiny_checkpoint_path, tmp_path
     assert metrics["peak_concurrent_seqs"] == 2
     # Slots reserve the wave's worst case, so mixed lengths waste reservation.
     assert 0 < metrics["kv_efficiency"] < 1
+
+
+def test_phases_are_timed_separately_and_account_for_the_pass(
+    tiny_checkpoint_path, tmp_path
+):
+    record = main(
+        bench_args(
+            tiny_checkpoint_path,
+            tmp_path,
+            **{
+                "--num-requests": "2",
+                "--mode": "static",
+                "--batch-size": "2",
+            },
+        )
+    )
+
+    metrics = record["metrics"]
+    # One wave of 128-token outputs: the prefill logits yield the first token,
+    # so the remaining 127 come from decode forward passes.
+    assert metrics["decode_steps"] == 127
+    assert metrics["prefill_time_s"] > 0
+    assert metrics["decode_time_s"] > 0
+    assert metrics["s_per_decode_step"] == pytest.approx(metrics["decode_time_s"] / 127)
+    # The two phases partition the pass; only bookkeeping falls between them.
+    phases = metrics["prefill_time_s"] + metrics["decode_time_s"]
+    assert phases == pytest.approx(metrics["wall_time_s"], rel=0.05)
+
+
+def test_sequential_mode_times_every_request(tiny_checkpoint_path, tmp_path):
+    """Timing accumulates across calls, so one pass sums all of its requests."""
+    record = main(
+        bench_args(
+            tiny_checkpoint_path,
+            tmp_path,
+            **{"--num-requests": "2"},
+        )
+    )
+
+    metrics = record["metrics"]
+    # Two requests, each running its 128 decode passes back to back.
+    assert metrics["decode_steps"] == 2 * 128
+    phases = metrics["prefill_time_s"] + metrics["decode_time_s"]
+    assert phases == pytest.approx(metrics["wall_time_s"], rel=0.05)
