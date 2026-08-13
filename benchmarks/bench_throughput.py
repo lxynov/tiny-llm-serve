@@ -25,6 +25,7 @@ from pathlib import Path
 import torch
 
 from benchmarks.workloads import WORKLOADS, Request, build_workload
+from tiny_llm_serve.config import ModelConfig
 from tiny_llm_serve.engine.llm_engine import LLM, Timing
 from tiny_llm_serve.engine.sampling_params import SamplingParams
 from tiny_llm_serve.models import loader
@@ -71,6 +72,22 @@ def run_static(
             timing=timing,
         )
     return outputs
+
+
+def weight_bytes(model: torch.nn.Module) -> int:
+    """Bytes of parameters the device holds."""
+    return sum(p.numel() * p.element_size() for p in model.parameters())
+
+
+def kv_bytes_per_token(config: ModelConfig, dtype: torch.dtype) -> int:
+    """Bytes one cached token occupies across every layer."""
+    return (
+        2
+        * config.num_hidden_layers
+        * config.num_key_value_heads
+        * config.head_dim
+        * dtype.itemsize
+    )
 
 
 def dispersion(times: list[float]) -> float | None:
@@ -182,6 +199,9 @@ def bench(args: argparse.Namespace) -> dict:
         # The naive sequential cache grows exactly with what it stores.
         reserved_kv_tokens = used_kv_tokens
         peak_concurrent_seqs = 1
+    kv_per_token = kv_bytes_per_token(
+        llm.model.config, next(llm.model.parameters()).dtype
+    )
     wall = statistics.fmean(times)
     decode_time = statistics.fmean(t.decode_s for t in timings)
     # The workload is fixed and ignore_eos forces exact output lengths, so
@@ -223,6 +243,8 @@ def bench(args: argparse.Namespace) -> dict:
             "output_tokens": output_tokens,
             "output_tok_s": output_tokens / wall,
             "total_tok_s": (prompt_tokens + output_tokens) / wall,
+            "weight_bytes": weight_bytes(llm.model),
+            "kv_bytes_reserved": reserved_kv_tokens * kv_per_token,
             "peak_gpu_memory_allocated_bytes": (
                 torch.cuda.max_memory_allocated() if device == "cuda" else None
             ),
