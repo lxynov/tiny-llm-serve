@@ -22,6 +22,7 @@ from pathlib import Path
 
 import torch
 
+from benchmarks import hardware
 from benchmarks.workloads import WORKLOADS, Request, build_workload
 from tiny_llm_serve.config import ModelConfig
 from tiny_llm_serve.engine.llm_engine import LLM, Timing
@@ -86,6 +87,45 @@ def kv_bytes_per_token(config: ModelConfig, dtype: torch.dtype) -> int:
         * config.head_dim
         * dtype.itemsize
     )
+
+
+def decode_groups(
+    requests: list[Request], mode: str, batch_size: int
+) -> list[tuple[int, int, int]]:
+    """Per set of sequences decoded together: (sequences, the KV length they
+    start from, decode steps).
+    """
+    if mode == "static":
+        return [
+            (
+                len(wave),
+                max(len(r.prompt_ids) for r in wave),
+                # The wave's first token falls out of the prefill logits.
+                max(r.output_len for r in wave) - 1,
+            )
+            for wave in waves(requests, batch_size)
+        ]
+    return [(1, len(r.prompt_ids), r.output_len) for r in requests]
+
+
+def decode_bytes_read(
+    groups: list[tuple[int, int, int]], weights: int, kv_per_token: int
+) -> int:
+    """Bytes decode has to move, at minimum, to produce a pass's tokens.
+
+    Every step re-reads all the weights to advance each sequence by one token,
+    so the weight term is charged once per *step* rather than once per
+    sequence. That is the batching win stated in bytes: it is why this total
+    rises far more slowly than the batch size does, and why utilization climbs
+    with it. On top of it each sequence reads its own KV window, which grows by
+    one token every step.
+    """
+    total = 0
+    for batch, kv_len, steps in groups:
+        total += steps * weights
+        window_tokens = steps * kv_len + steps * (steps + 1) // 2
+        total += batch * window_tokens * kv_per_token
+    return total
 
 
 def git_state() -> tuple[str | None, bool | None]:
@@ -184,9 +224,15 @@ def bench(args: argparse.Namespace) -> dict:
         # The naive sequential cache grows exactly with what it stores.
         reserved_kv_tokens = used_kv_tokens
         peak_concurrent_seqs = 1
+    weights = weight_bytes(llm.model)
     kv_per_token = kv_bytes_per_token(
         llm.model.config, next(llm.model.parameters()).dtype
     )
+    decode_bytes = decode_bytes_read(
+        decode_groups(requests, args.mode, args.batch_size), weights, kv_per_token
+    )
+    env = environment(device)
+    peak_bytes_s = hardware.peak_hbm_bytes_s(env.get("gpu"))
     decode_time = timing.decode_s
     decode_steps = timing.decode_steps
     commit, dirty = git_state()
@@ -204,7 +250,7 @@ def bench(args: argparse.Namespace) -> dict:
         "dirty": dirty,
         "model": args.model,
         "device": device,
-        "environment": environment(device),
+        "environment": env,
         "engine_mode": args.mode,
         "workload": args.workload,
         "num_requests": args.num_requests,
@@ -223,7 +269,13 @@ def bench(args: argparse.Namespace) -> dict:
             "output_tokens": output_tokens,
             "output_tok_s": output_tokens / wall,
             "total_tok_s": (prompt_tokens + output_tokens) / wall,
-            "weight_bytes": weight_bytes(llm.model),
+            "decode_bytes_read": decode_bytes,
+            "mbu": (
+                decode_bytes / decode_time / peak_bytes_s
+                if peak_bytes_s and decode_time
+                else None
+            ),
+            "weight_bytes": weights,
             "kv_bytes_reserved": reserved_kv_tokens * kv_per_token,
             "peak_gpu_memory_allocated_bytes": (
                 torch.cuda.max_memory_allocated() if device == "cuda" else None
