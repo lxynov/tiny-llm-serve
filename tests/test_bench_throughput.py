@@ -58,7 +58,7 @@ def test_static_mode_drains_the_workload_in_waves(tiny_checkpoint_path, tmp_path
             tmp_path,
             **{
                 "--workload": "mixed-out",
-                "--num-requests": "3",
+                "--num-requests": "4",
                 "--mode": "static",
                 "--batch-size": "2",
             },
@@ -67,9 +67,10 @@ def test_static_mode_drains_the_workload_in_waves(tiny_checkpoint_path, tmp_path
 
     assert record["engine_mode"] == "static"
     assert record["config"]["batch_size"] == 2
+    assert record["config"]["num_waves"] == 2
     metrics = record["metrics"]
-    # All 3 requests ran (two waves of 2 + 1), with forced output lengths.
-    workload = build_workload("mixed-out", 3, 128, seed=0)
+    # All 4 requests ran (two waves of 2), with forced output lengths.
+    workload = build_workload("mixed-out", 4, 128, seed=0)
     assert metrics["output_tokens"] == sum(r.output_len for r in workload)
     assert metrics["peak_concurrent_seqs"] == 2
     # Slots reserve the wave's worst case, so mixed lengths waste reservation.
@@ -216,3 +217,30 @@ def test_weight_bytes_counts_tied_storage_once():
     tied.weight = shared.weight
 
     assert weight_bytes(torch.nn.Sequential(shared, tied)) == 4 * 4 * 4
+
+
+def test_ragged_final_wave_is_rejected(tiny_checkpoint_path, tmp_path):
+    """A short final wave would be recorded under the full batch size."""
+    args = bench_args(
+        tiny_checkpoint_path,
+        tmp_path,
+        **{"--num-requests": "3", "--mode": "static", "--batch-size": "2"},
+    )
+
+    with pytest.raises(ValueError, match="not a multiple of --batch-size"):
+        main(args)
+    assert not list(tmp_path.glob("*.json"))
+
+
+def test_sequential_mode_ignores_the_batch_size(tiny_checkpoint_path, tmp_path):
+    """Divisibility constrains waves, and sequential mode has none."""
+    record = main(
+        bench_args(
+            tiny_checkpoint_path,
+            tmp_path,
+            **{"--num-requests": "3", "--batch-size": "2"},
+        )
+    )
+
+    assert record["config"]["batch_size"] is None
+    assert record["config"]["num_waves"] is None
