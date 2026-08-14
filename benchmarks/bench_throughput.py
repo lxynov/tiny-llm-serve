@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import platform
+import statistics
 import subprocess
 import time
 import uuid
@@ -126,6 +127,22 @@ def decode_bytes_read(
         window_tokens = steps * kv_len + steps * (steps + 1) // 2
         total += batch * window_tokens * kv_per_token
     return total
+
+
+def length_stats(lengths: list[int]) -> dict:
+    return {
+        "mean": statistics.fmean(lengths),
+        "median": statistics.median(lengths),
+        "min": min(lengths),
+        "max": max(lengths),
+    }
+
+
+def workload_stats(requests: list[Request]) -> dict:
+    return {
+        "prompt_len": length_stats([len(r.prompt_ids) for r in requests]),
+        "output_len": length_stats([r.output_len for r in requests]),
+    }
 
 
 def git_state() -> tuple[str | None, bool | None]:
@@ -252,7 +269,9 @@ def bench(args: argparse.Namespace) -> dict:
         "device": device,
         "environment": env,
         "engine_mode": args.mode,
+        "load": "offline-drain",
         "workload": args.workload,
+        "workload_stats": workload_stats(requests),
         "num_requests": args.num_requests,
         "seed": args.seed,
         "config": {
