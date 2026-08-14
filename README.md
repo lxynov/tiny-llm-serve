@@ -56,6 +56,12 @@ uv run python -m benchmarks.bench_throughput --workload mixed-out --num-requests
 | `sequential` | One request at a time, naive growing cache | Exactly what it stores (efficiency 1.0) |
 | `static` | Successive full batches of `--batch-size` (all requests are drained, so cross-mode runs stay comparable) | Per wave: `batch × (longest prompt + longest output)`, each slot's preallocated worst case |
 
+In `static` mode `--num-requests` must be a multiple of `--batch-size`. A short
+final wave would otherwise be recorded under the full batch size, so a
+batch-size sweep would compare points that never ran the batch size they are
+plotted against; requiring whole waves also keeps the workload byte-identical
+across the sweep, which is what rule 1 needs.
+
 Continuous batching modes land next and reuse the same flags.
 
 ### Workloads
