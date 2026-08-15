@@ -28,14 +28,23 @@ def resolve_device(device: str | None = None) -> str:
     return "cpu"
 
 
+def is_cuda(device: str) -> bool:
+    """Whether `device` is a GPU, `cuda:1` included.
+
+    An exact `== "cuda"` test sends an indexed device down the CPU path, where
+    every GPU-only measurement quietly turns into nothing.
+    """
+    return device.startswith("cuda")
+
+
 def synchronize(device: str) -> None:
     """Block until `device` has finished the work already submitted to it.
 
     Accelerator work is enqueued asynchronously, so a clock read that is not
     preceded by a barrier times kernel *submission* rather than execution.
     """
-    if device.startswith("cuda"):
-        torch.cuda.synchronize()
+    if is_cuda(device):
+        torch.cuda.synchronize(device)
     elif device.startswith("mps"):
         torch.mps.synchronize()
 
