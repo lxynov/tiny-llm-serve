@@ -28,6 +28,15 @@ def test_load_weights_requires_safetensors_files(tmp_path):
         loader.load_weights(tmp_path)
 
 
+def test_an_indexed_cuda_device_is_still_a_gpu():
+    """`--device cuda:1` is a GPU run; treating it as anything else drops it
+    down the CPU path, where the GPU-only metrics come back null."""
+    assert loader.is_cuda("cuda")
+    assert loader.is_cuda("cuda:1")
+    assert not loader.is_cuda("cpu")
+    assert not loader.is_cuda("mps")
+
+
 def write_config(tmp_path, **overrides):
     data = {
         "hidden_size": 64,
