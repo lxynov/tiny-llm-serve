@@ -58,11 +58,33 @@ uv run python -m benchmarks.bench_throughput --workload mixed-out --num-requests
 
 In `static` mode `--num-requests` must be a multiple of `--batch-size`. A short
 final wave would otherwise be recorded under the full batch size, so a
-batch-size sweep would compare points that never ran the batch size they are
+batch-size sweep would compare trials that never ran the batch size they are
 plotted against; requiring whole waves also keeps the workload byte-identical
 across the sweep, which is what rule 1 needs.
 
 Continuous batching modes land next and reuse the same flags.
+
+### Sweeps
+
+A batch-size sweep is a grid of runs, not one run, so `benchmarks/sweep.py`
+drives it:
+
+```bash
+uv run python -m benchmarks.sweep --model Qwen/Qwen3-8B --dtype bfloat16 \
+  --num-requests 128 --batch-sizes 1,2,4,8,16,32,64,128 --sequential
+```
+
+Each trial — one workload at one batch size — runs in **its own process**,
+because the caching allocator's pool outlives a run and trials sharing a
+process would report each other's peak memory, the metric that decides where
+the sweep ends. A trial that dies does not stop the sweep: running out of
+memory at a large batch size is *where capacity ran out*, which is a result,
+and aborting there would discard every trial still queued behind it. Trials
+already recorded in the output directory are skipped, so an interrupted sweep
+resumes rather than re-paying.
+
+Batch sizes run ascending behind the optional sequential baseline, so a sweep
+that dies at its memory ceiling has already banked the rest of the curve.
 
 ### Workloads
 
