@@ -6,6 +6,7 @@ import torch
 from benchmarks.bench_throughput import (
     decode_bytes_read,
     decode_groups,
+    environment,
     main,
     weight_bytes,
 )
@@ -50,6 +51,29 @@ def test_harness_writes_a_complete_record(tiny_checkpoint_path, tmp_path):
     # Both memory peaks are recorded, and both are null off-GPU.
     assert metrics["peak_gpu_memory_allocated_bytes"] is None
     assert metrics["peak_gpu_memory_reserved_bytes"] is None
+
+
+def test_environment_describes_the_selected_gpu(monkeypatch):
+    """On a multi-GPU box `--device cuda:1` must be recognized as a GPU *and*
+    be the one described: the peak-memory reads follow the same device."""
+    queried = []
+
+    class Properties:
+        name = "NVIDIA H100 80GB HBM3"
+        total_memory = 80 * 1024**3
+
+    def get_device_properties(device):
+        queried.append(device)
+        return Properties()
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", get_device_properties)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
+
+    info = environment("cuda:1")
+
+    assert queried == ["cuda:1"]  # not the current device, whatever that is
+    assert info["gpu"] == "NVIDIA H100 80GB HBM3"
+    assert info["gpu_memory_bytes"] == 80 * 1024**3
 
 
 def test_static_mode_drains_the_workload_in_waves(tiny_checkpoint_path, tmp_path):

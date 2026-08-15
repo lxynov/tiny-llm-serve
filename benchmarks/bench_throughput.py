@@ -213,8 +213,8 @@ def environment(device: str) -> dict:
         # harness passes it, and CPU throughput scales with it.
         "torch_threads": torch.get_num_threads(),
     }
-    if device == "cuda":
-        properties = torch.cuda.get_device_properties()
+    if loader.is_cuda(device):
+        properties = torch.cuda.get_device_properties(device)
         info |= {
             "gpu": properties.name,
             "gpu_count": torch.cuda.device_count(),
@@ -228,6 +228,7 @@ def bench(args: argparse.Namespace) -> dict:
     if args.mode == "static":
         check_whole_waves(args.num_requests, args.batch_size)
     device = loader.resolve_device(args.device)
+    on_gpu = loader.is_cuda(device)
     llm = LLM(args.model, device=device, dtype=DTYPES[args.dtype])
     requests = build_workload(
         args.workload, args.num_requests, llm.model.config.vocab_size, args.seed
@@ -238,8 +239,10 @@ def bench(args: argparse.Namespace) -> dict:
             return run_static(llm, requests, args.batch_size, timing)
         return run_sequential(llm, requests, timing)
 
-    if device == "cuda":
-        torch.cuda.reset_peak_memory_stats()
+    if on_gpu:
+        # Per device: the stats these clear and the ones read below both belong
+        # to whichever GPU they are pointed at, not to whichever is current.
+        torch.cuda.reset_peak_memory_stats(device)
     for _ in range(args.warmup):
         runner()
     times = []
@@ -332,10 +335,10 @@ def bench(args: argparse.Namespace) -> dict:
             "weight_bytes": weights,
             "kv_bytes_reserved": reserved_kv_tokens * kv_per_token,
             "peak_gpu_memory_allocated_bytes": (
-                torch.cuda.max_memory_allocated() if device == "cuda" else None
+                torch.cuda.max_memory_allocated(device) if on_gpu else None
             ),
             "peak_gpu_memory_reserved_bytes": (
-                torch.cuda.max_memory_reserved() if device == "cuda" else None
+                torch.cuda.max_memory_reserved(device) if on_gpu else None
             ),
             "peak_concurrent_seqs": peak_concurrent_seqs,
             "kv_efficiency": used_kv_tokens / reserved_kv_tokens,
