@@ -156,17 +156,24 @@ def workload_stats(requests: list[Request]) -> dict:
     }
 
 
-def git_state() -> tuple[str | None, bool | None]:
-    """The commit and whether the tree was dirty.
+def git_state(repo: Path = Path(__file__).parent) -> tuple[str | None, bool | None]:
+    """The commit and whether the tree carried uncommitted changes to it.
 
     A commit alone does not identify the code that ran: two runs from the
     same commit with different uncommitted edits are indistinguishable
     otherwise, which is exactly the claim a record is supposed to settle.
+
+    Untracked files do not count, because this harness writes its records
+    *into* the repository: counting them would mark every run after the first
+    dirty for the file its predecessor left behind, and a flag that fires on
+    every run says nothing about any of them.
     """
-    git = ["git", "-C", str(Path(__file__).parent)]
+    git = ["git", "-C", str(repo)]
     try:
         commit = subprocess.check_output(git + ["rev-parse", "HEAD"], text=True)
-        status = subprocess.check_output(git + ["status", "--porcelain"], text=True)
+        status = subprocess.check_output(
+            git + ["status", "--porcelain", "--untracked-files=no"], text=True
+        )
     except (OSError, subprocess.CalledProcessError):
         return None, None
     return commit.strip(), bool(status.strip())

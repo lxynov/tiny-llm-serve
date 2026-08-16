@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import pytest
 import torch
@@ -7,6 +8,7 @@ from benchmarks.bench_throughput import (
     decode_bytes_read,
     decode_groups,
     environment,
+    git_state,
     main,
     weight_bytes,
 )
@@ -50,6 +52,34 @@ def test_harness_writes_a_complete_record(tiny_checkpoint_path, tmp_path):
     # Both memory peaks are recorded, and both are null off-GPU.
     assert metrics["peak_gpu_memory_allocated_bytes"] is None
     assert metrics["peak_gpu_memory_reserved_bytes"] is None
+
+
+def test_dirty_ignores_untracked_files(tmp_path):
+    """The harness writes its records into the repository, so untracked files
+    must not count: otherwise every run after the first is flagged dirty for
+    the record its predecessor left behind."""
+
+    def run(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True
+        )
+
+    run("init")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    (tmp_path / "tracked.py").write_text("x = 1\n")
+    run("add", "tracked.py")
+    run("commit", "-m", "first")
+
+    commit, dirty = git_state(tmp_path)
+    assert commit and not dirty
+
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "run.json").write_text("{}")
+    assert git_state(tmp_path) == (commit, False)
+
+    (tmp_path / "tracked.py").write_text("x = 2\n")
+    assert git_state(tmp_path) == (commit, True)
 
 
 def test_environment_describes_the_selected_gpu(monkeypatch):
