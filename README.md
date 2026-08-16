@@ -148,7 +148,11 @@ names — this one keeps the two apart.
    model, core count, torch thread count, and GPU name, memory, and CUDA
    version on a GPU box — so rule 1 can be checked after the fact instead of
    taken on trust. A record with `"dirty": true` measures code that no commit
-   describes; treat it as a scratch run. Filenames lead with the UTC
+   describes; treat it as a scratch run. Dirty counts tracked modifications
+   only — records are written *into* this repository, so counting untracked
+   files would mark every run after the first for the record its predecessor
+   left behind, and a flag that fires on every run says nothing about any of
+   them. Filenames lead with the UTC
    timestamp and device (`20260731-192455-mps-sequential-mixed-out-da20ae`);
    keep separate machines in separate `--output-dir`s.
 
