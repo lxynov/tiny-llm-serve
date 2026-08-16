@@ -10,6 +10,8 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Shapes: x: [..., hidden_size] -> same, over this module's own
+        hidden_size (Qwen3's per-head q/k norms build one with head_dim)."""
         # Upcast to fp32 for the root-mean-square computation, then cast back before applying the weights
         input_dtype = x.dtype
         x = x.float()
