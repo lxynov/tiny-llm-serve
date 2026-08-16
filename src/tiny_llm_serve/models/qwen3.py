@@ -42,6 +42,27 @@ class Qwen3Attention(nn.Module):
     def forward(
         self, x: torch.Tensor, positions: torch.Tensor, kv_cache: KVCacheView | None
     ) -> torch.Tensor:
+        """Project to q/k/v, normalize and rotate them, attend, project back.
+
+        Shapes:
+            x:                  [*b, seq_len, hidden_size]
+            positions:          [*b, seq_len] int64
+            qkv_proj(x):        [*b, seq_len, (num_heads + 2 * num_kv_heads) * head_dim]
+            q, after split:     [*b, seq_len, num_heads * head_dim]
+            k, v, after split:  [*b, seq_len, num_kv_heads * head_dim]
+            q, after view:      [*b, seq_len, num_heads, head_dim]
+            k, v, after view:   [*b, seq_len, num_kv_heads, head_dim]
+            k, v, from cache:   [*b, kv_len, num_kv_heads, head_dim]
+            attn(q, k, v):      [*b, seq_len, num_heads, head_dim]
+            o.flatten(-2):      [*b, seq_len, num_heads * head_dim]
+            ->                  same as x
+          where kv_len >= seq_len, the positions the cache hands back this step;
+          q_norm, k_norm and rotary_emb leave the per-head shape untouched
+
+        Qwen3-0.6B: 16 heads, 8 kv heads (GQA 2:1), head_dim 128 from config
+        rather than hidden_size // num_heads, so qkv_proj widens 1024 -> 4096
+        and o_proj narrows 2048 -> 1024.
+        """
         q, k, v = self.qkv_proj(x).split(self.qkv_proj.output_sizes, dim=-1)
         q = self.q_norm(q.view(*q.shape[:-1], self.num_heads, self.head_dim))
         k = self.k_norm(k.view(*k.shape[:-1], self.num_kv_heads, self.head_dim))
@@ -56,6 +77,12 @@ class Qwen3Attention(nn.Module):
 
 
 class Qwen3MLP(nn.Module):
+    """SwiGLU feed-forward network (Swish-Gated Linear Unit).
+
+    FFN(x) = (silu(x @ W_gate) * (x @ W_up)) @ W_down
+    silu(z) = z * sigmoid(z)
+    """
+
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.gate_up_proj = MergedLinear(
@@ -67,6 +94,14 @@ class Qwen3MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Project up to a fused [gate, up], gate it, then project back down.
+
+        Shapes:
+            x:               [..., hidden_size]
+            gate_up_proj(x): [..., 2 * intermediate_size]
+            act_fn(...):     [..., intermediate_size]
+            ->               same as x
+        """
         return self.down_proj(self.act_fn(self.gate_up_proj(x)))
 
 
@@ -85,6 +120,13 @@ class Qwen3DecoderLayer(nn.Module):
     def forward(
         self, x: torch.Tensor, positions: torch.Tensor, kv_cache: KVCacheView | None
     ) -> torch.Tensor:
+        """Pre-normed attention and MLP sublayers, each behind a residual.
+
+        Shapes:
+            x:         [*b, seq_len, hidden_size]
+            positions: [*b, seq_len] int64
+            ->         same as x
+        """
         x = x + self.self_attn(self.input_layernorm(x), positions, kv_cache)
         return x + self.mlp(self.post_attention_layernorm(x))
 
@@ -110,6 +152,13 @@ class Qwen3Model(nn.Module):
         positions: torch.Tensor,
         kv_cache: KVCacheView | None = None,
     ) -> torch.Tensor:
+        """Embed the tokens, run every decoder layer, then the final norm.
+
+        Shapes:
+            input_ids: [*b, seq_len] int64
+            positions: same as input_ids
+            ->         [*b, seq_len, hidden_size]
+        """
         x = self.embed_tokens(input_ids)
         for layer in self.layers:
             x = layer(x, positions, kv_cache)
@@ -117,7 +166,7 @@ class Qwen3Model(nn.Module):
 
 
 class Qwen3ForCausalLM(CausalLM):
-    """Qwen3 over a flat [num_tokens] or padded [batch, seq] token layout."""
+    """Qwen3 over a flat [num_tokens] or padded [batch, seq_len] token layout."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__(config)
@@ -152,8 +201,16 @@ class Qwen3ForCausalLM(CausalLM):
         kv_cache: KVCacheView | None = None,
         logits_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return logits [..., vocab_size] for input_ids [num_tokens] or [batch,
-        seq] -- every position, or only the `logits_indices` ones."""
+        """Return logits for every position, or only the `logits_indices` ones.
+
+        Shapes:
+            input_ids:      [*b, seq_len] int64
+            positions:      same as input_ids
+            logits_indices: [num_selected] int64 (token indices, flat layout)
+                            | [batch] int64 (one per row, padded layout) | None
+            ->              [*b, seq_len, vocab_size]
+            -> indexed:     [num_selected, vocab_size] | [batch, vocab_size]
+        """
         hidden = self.model(input_ids, positions, kv_cache)
         if logits_indices is not None:
             if hidden.dim() == 2:

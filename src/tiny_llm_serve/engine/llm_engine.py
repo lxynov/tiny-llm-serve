@@ -122,10 +122,12 @@ class LLM:
         reproduces itself but not sequential runs.
         """
         params_list = _batch_params(params, len(prompts))
-        shared = params_list[0]  # identical everywhere but max_tokens
+        sampling_params = params_list[0]  # rows differ only in max_tokens
         generator = None
-        if shared.seed is not None:
-            generator = torch.Generator(device=self.device).manual_seed(shared.seed)
+        if sampling_params.seed is not None:
+            generator = torch.Generator(device=self.device).manual_seed(
+                sampling_params.seed
+            )
         prompt_lens = [len(p) for p in prompts]
         if min(prompt_lens, default=0) == 0:
             raise ValueError("empty prompts are not supported")
@@ -170,11 +172,11 @@ class LLM:
         outputs: list[list[int]] = [[] for _ in prompts]
         finished = torch.zeros(num_seqs, dtype=torch.bool, device=self.device)
         while True:
-            next_ids = self.sampler(step_logits, shared, seen_ids, generator)
+            next_ids = self.sampler(step_logits, sampling_params, seen_ids, generator)
             for i, next_id in enumerate(next_ids.tolist()):
                 if finished[i]:
                     continue
-                if not shared.ignore_eos and next_id == eos:
+                if not sampling_params.ignore_eos and next_id == eos:
                     finished[i] = True
                 elif len(outputs[i]) + 1 == params_list[i].max_tokens:
                     outputs[i].append(next_id)

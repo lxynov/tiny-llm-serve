@@ -13,19 +13,29 @@ class Attention(nn.Module):
         v: torch.Tensor,
         attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Attend q [..., q_len, num_heads, head_dim] to k/v [..., kv_len,
-        num_kv_heads, head_dim]; the leading batch dimension is optional.
+        """Attend q to k/v, whose leading kv_len - q_len positions are cached.
 
-        k/v include cached positions; num_kv_heads may divide num_heads (GQA).
         Without a mask, q_len == kv_len is causal prefill and q_len == 1 is
         single-token decode over the whole cache. A boolean `attn_mask`
-        broadcastable to [..., 1, q_len, kv_len] (True = attend) covers
-        everything else, e.g. batched decode over per-sequence valid lengths.
-        Returns the same shape as q.
+        (True = attend) covers everything else, e.g. batched decode over
+        per-sequence valid lengths.
+
+        Shapes:
+            q:                     [*b, q_len, num_heads, head_dim]
+            k, v:                  [*b, kv_len, num_kv_heads, head_dim]
+            attn_mask:            ~[*b, 1, q_len, kv_len] bool | None
+            q, after transpose:    [*b, num_heads, q_len, head_dim]
+            k, v, after transpose: [*b, num_kv_heads, kv_len, head_dim]
+            sdpa(q, k, v):         [batch, num_heads, q_len, head_dim]
+            o, after squeeze:      [*b, num_heads, q_len, head_dim]
+            ->                     same as q
+          where kv_len >= q_len and num_heads % num_kv_heads == 0 -- GQA, with
+          enable_gqa broadcasting each kv head across its query heads; an
+          unbatched call is unsqueezed to batch 1 for SDPA and squeezed back
         """
         q_len, kv_len = q.shape[-3], k.shape[-3]
-        # SDPA's is_causal anchors the mask top-left, which is only correct when
-        # the queries cover the whole sequence (full prefill).
+        # is_causal gives query i the keys 0..i, which are the right ones only if
+        # the queries start at position 0; with a cache it would hide the past.
         if attn_mask is None and q_len > 1 and q_len != kv_len:
             raise ValueError(f"partial prefill needs a mask: {q_len=} vs {kv_len=}")
         batched = q.dim() == 4
