@@ -22,6 +22,11 @@ class PreallocatedKVManager(KVManager):
     The reservation makes admitted sequences safe by construction but wastes
     every slot token past a sequence's true length -- the waste the
     kv_efficiency metric measures and paged attention will reclaim.
+
+    Shapes:
+        k_cache[layer], v_cache[layer]:
+            [num_slots, max_model_len, num_kv_heads, head_dim]
+        cached_seq_lens: [num_slots] int64
     """
 
     def __init__(
@@ -87,13 +92,15 @@ class PreallocatedKVManager(KVManager):
 
 
 class _PrefillStep:
-    """Writes a right-padded [batch, padded_len, ...] prompt block into fresh
-    slots.
+    """Writes a right-padded prompt block into fresh slots.
 
     attn_mask stays None: with right padding, causal masking alone keeps every
     real query from attending pad keys, and pad rows' outputs are discarded.
     The pad k/v written past each prompt are stale until decode overwrites
     them; decode's mask hides them meanwhile.
+
+    Shapes:
+        slot_ids: [batch] int64 -- which pool slot each row writes to
     """
 
     attn_mask: torch.Tensor | None = None
@@ -105,6 +112,13 @@ class _PrefillStep:
     def append(
         self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Write the whole padded prompt block, pad positions included.
+
+        Shapes:
+            k, v:    [batch, seq_len, num_kv_heads, head_dim]
+            -> k, v: same (nothing is cached yet beyond this block, so the
+                     step reads back exactly what it wrote)
+        """
         padded_len = k.shape[1]
         self._manager.k_cache[layer_idx][self._slot_ids, :padded_len] = k
         self._manager.v_cache[layer_idx][self._slot_ids, :padded_len] = v
@@ -117,6 +131,13 @@ class _DecodeStep:
     Returned k/v are cache slices padded to the longest sequence in the step;
     attn_mask marks which positions are real per row, hiding both stale pad
     entries and shorter sequences' tails.
+
+    Shapes:
+        slot_ids:  [batch] int64 -- which pool slot each row reads and writes
+        write_pos: [batch] int64 -- the position this step's token lands on,
+                   i.e. each sequence's cached length before the step
+        attn_mask: [batch, 1, 1, kv_len] bool
+      where kv_len == max(write_pos) + 1
     """
 
     def __init__(
@@ -139,6 +160,13 @@ class _DecodeStep:
     def append(
         self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Write this step's single token per row, then read the slots back.
+
+        Shapes:
+            k, v:    [batch, 1, num_kv_heads, head_dim]
+            -> k, v: [batch, kv_len, num_kv_heads, head_dim]
+          where kv_len is the longest sequence in the step, this token included
+        """
         if k.shape[1] != 1:
             raise ValueError(f"decode appends one token per sequence, got {k.shape[1]}")
         k_cache = self._manager.k_cache[layer_idx]

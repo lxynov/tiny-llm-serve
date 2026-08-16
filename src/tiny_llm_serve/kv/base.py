@@ -14,24 +14,31 @@ class KVCacheView(Protocol):
     """What a decoder layer needs from any KV-cache backend during one forward
     pass: somewhere to append this step's k/v, and the attention mask describing
     which cached positions are valid. `attn_mask` follows Attention's
-    convention: None when causal masking suffices, otherwise a boolean mask
-    broadcastable to [..., 1, seq_len, kv_len], True where attention may look."""
+    convention: None when causal masking suffices, otherwise True where
+    attention may look.
+
+    Shapes:
+        attn_mask: ~[*b, 1, q_len, kv_len] bool | None
+    """
 
     attn_mask: torch.Tensor | None
 
     def append(
         self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Store one layer's k/v for this step, [..., seq_len, num_kv_heads,
-        head_dim], and return the k/v attention should read over:
-        [..., kv_len, num_kv_heads, head_dim] with kv_len >= seq_len, cached
-        positions included and padded to the longest sequence in the step.
-        Pass the result to Attention together with `attn_mask`, which says
-        which of those positions are real.
+        """Store one layer's k/v for this step and return the k/v attention
+        should read over: cached positions included, padded to the longest
+        sequence in the step. Pass the result to Attention together with
+        `attn_mask`, which says which of those positions are real.
 
         The leading batch dimension is present exactly when the backend batches
         sequences. A view describes a single step, so call this once per layer
         per forward pass.
+
+        Shapes:
+            k, v:    [*b, seq_len, num_kv_heads, head_dim]
+            -> k, v: [*b, kv_len, num_kv_heads, head_dim]
+          where kv_len >= seq_len
         """
         ...
 

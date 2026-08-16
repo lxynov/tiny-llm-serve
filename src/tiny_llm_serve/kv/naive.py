@@ -4,8 +4,11 @@ import torch
 class NaiveKVCache:
     """Naive per-request KV cache.
 
-    One contiguous [seq_len, num_kv_heads, head_dim] tensor pair per layer,
-    grown by concatenation each step. To be replaced by a paged KV cache.
+    One contiguous k/v tensor pair per layer, grown by concatenation each step.
+
+    Shapes:
+        _keys[layer], _values[layer]: [kv_len, num_kv_heads, head_dim] | None
+        attn_mask:                    always None (causal masking suffices)
     """
 
     attn_mask: torch.Tensor | None = None
@@ -21,7 +24,14 @@ class NaiveKVCache:
     def append(
         self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Append this step's k/v for a layer and return the full cached tensors."""
+        """Append this step's k/v for a layer and return the full cached tensors.
+
+        Shapes:
+            k, v:    [seq_len, num_kv_heads, head_dim]
+            -> k, v: [kv_len, num_kv_heads, head_dim]
+          where kv_len is every token cached so far, this step included; no
+          batch dim, since one cache serves one request
+        """
         cached_k, cached_v = self._keys[layer_idx], self._values[layer_idx]
         if cached_k is not None and cached_v is not None:
             # torch.cat allocates a new tensor and copies both inputs into it,

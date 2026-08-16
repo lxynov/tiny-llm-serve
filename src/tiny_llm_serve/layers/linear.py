@@ -7,6 +7,10 @@ class MergedLinear(nn.Linear):
 
     Checkpoints store the projections as separate tensors; `load_shard` copies
     each into its row slice of the fused weight.
+
+    Shapes (inherited nn.Linear.forward):
+        x:  [..., in_features]
+        -> [..., sum(output_sizes)], the projections concatenated in order
     """
 
     def __init__(self, in_features: int, output_sizes: list[int]) -> None:
@@ -14,5 +18,10 @@ class MergedLinear(nn.Linear):
         self.output_sizes = output_sizes
 
     def load_shard(self, index: int, weight: torch.Tensor) -> None:
+        """Copy one checkpoint projection into its slice of the fused weight.
+
+        Shapes:
+            weight: [output_sizes[index], in_features]
+        """
         start = sum(self.output_sizes[:index])
         self.weight.data[start : start + self.output_sizes[index]].copy_(weight)
