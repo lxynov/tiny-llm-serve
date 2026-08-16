@@ -1,0 +1,69 @@
+{
+  "run_id": "20260815-170331-cuda:0-static-mixed-out-f9f928",
+  "date": "2026-08-15T17:03:31+00:00",
+  "commit": "f4f73a3f979499af1b28e9a4376303a5141fa8d8",
+  "dirty": true,
+  "model": "Qwen/Qwen3-8B",
+  "device": "cuda:0",
+  "environment": {
+    "platform": "Linux-6.8.0-90-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "torch": "2.13.0+cu130",
+    "cpu": "Intel(R) Xeon(R) Platinum 8470",
+    "cpu_count": 208,
+    "torch_threads": 104,
+    "gpu": "NVIDIA H100 80GB HBM3",
+    "gpu_count": 1,
+    "gpu_memory_bytes": 85017493504,
+    "cuda": "13.0"
+  },
+  "engine_mode": "static",
+  "load": "offline-drain",
+  "workload": "mixed-out",
+  "workload_stats": {
+    "prompt_len": {
+      "mean": 512.0,
+      "median": 512.0,
+      "min": 512,
+      "max": 512
+    },
+    "output_len": {
+      "mean": 110.5390625,
+      "median": 62.5,
+      "min": 16,
+      "max": 512
+    }
+  },
+  "num_requests": 128,
+  "seed": 0,
+  "config": {
+    "dtype": "bfloat16",
+    "batch_size": 4,
+    "num_waves": 32
+  },
+  "metrics": {
+    "wall_time_s": 159.455381071195,
+    "wall_time_cv": 0.11214791226556903,
+    "wall_times_s": [
+      148.61702955141664,
+      149.6533690020442,
+      180.09574466012418
+    ],
+    "prefill_time_s": 2.1910248386363187,
+    "decode_time_s": 157.25737588107586,
+    "decode_steps": 7444,
+    "s_per_decode_step": 0.021125386335448127,
+    "prompt_tokens": 65536,
+    "output_tokens": 14149,
+    "output_tok_s": 88.73328642125055,
+    "total_tok_s": 499.73227284453674,
+    "decode_bytes_read": 124930649432064,
+    "mbu": 0.23714455976902898,
+    "weight_bytes": 16381470720,
+    "kv_bytes_reserved": 14073200640,
+    "peak_gpu_memory_allocated_bytes": 17293772800,
+    "peak_gpu_memory_reserved_bytes": 17431527424,
+    "peak_concurrent_seqs": 4,
+    "kv_efficiency": 0.8349224643755239
+  }
+}
