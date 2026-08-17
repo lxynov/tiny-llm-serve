@@ -15,6 +15,13 @@ uv sync
 Commands below run inside `.venv` via `uv run`. To use the environment
 directly, run `source .venv/bin/activate`.
 
+### Devices
+
+The engine picks `cuda`, then `mps`, then `cpu`, and `--device` overrides it;
+CI runs the tests on cpu alone. On Linux `uv sync` resolves the PyPI `torch`
+wheel built against CUDA 13.0, so a GPU run there requires CUDA 13.0+. macOS
+and Windows pull no CUDA stack.
+
 ## Run
 
 ```bash
