@@ -5,6 +5,10 @@ benchmarks/results/, following the protocol in the README: pre-tokenized
 prompts, ignore_eos so output lengths are exact, and the wall time of one
 full pass over the workload.
 
+A trial that runs out of memory still writes a record -- `"status": "oom"`
+with no metrics -- because the batch size that did not fit is the sweep's
+capacity ceiling, which is a finding rather than a lost run.
+
 Usage (from the repo root):
     python -m benchmarks.bench_throughput --model Qwen/Qwen3-0.6B \
         --workload mixed-out --num-requests 8
@@ -16,6 +20,7 @@ import os
 import platform
 import statistics
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -32,6 +37,8 @@ from tiny_llm_serve.models import loader
 
 DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
 RESULTS_DIR = Path(__file__).parent / "results"
+# Exit code for a run that recorded its own out-of-memory ceiling; see __main__.
+OOM_EXIT = 2
 
 
 def run_sequential(
@@ -196,13 +203,6 @@ def cpu_name() -> str | None:
 
 
 def environment(device: str) -> dict:
-    """The machine and software stack the numbers came off.
-
-    Comparability is a protocol rule, but a rule nobody can check after the
-    fact is a hope; recording the environment turns "same conditions" into
-    something a later reader can verify against another record. On MPS the
-    accelerator is the CPU's own chip, so `cpu` identifies both.
-    """
     info = {
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -224,10 +224,55 @@ def environment(device: str) -> dict:
     return info
 
 
+def run_config(args: argparse.Namespace) -> dict:
+    """What the harness was told to do."""
+    return {
+        "dtype": args.dtype,
+        "batch_size": args.batch_size if args.mode == "static" else None,
+        "num_waves": (
+            args.num_requests // args.batch_size if args.mode == "static" else None
+        ),
+    }
+
+
+def identity(args: argparse.Namespace, device: str) -> dict:
+    commit, dirty = git_state()
+    now = datetime.now(timezone.utc)
+    return {
+        "run_id": f"{now:%Y%m%d-%H%M%S}-{device}-{args.mode}-{args.workload}"
+        f"-{uuid.uuid4().hex[:6]}",
+        "date": now.isoformat(timespec="seconds"),
+        "commit": commit,
+        "dirty": dirty,
+        "model": args.model,
+        "device": device,
+        "environment": environment(device),
+        "engine_mode": args.mode,
+        "load": "offline-drain",
+        "workload": args.workload,
+        "num_requests": args.num_requests,
+        "seed": args.seed,
+        "config": run_config(args),
+    }
+
+
 def bench(args: argparse.Namespace) -> dict:
+    """One trial's record: what it measured, or the ceiling it found."""
     if args.mode == "static":
         check_whole_waves(args.num_requests, args.batch_size)
     device = loader.resolve_device(args.device)
+    try:
+        return measure(args, device)
+    except torch.OutOfMemoryError as error:
+        return identity(args, device) | {
+            "status": "oom",
+            "error": str(error).splitlines()[0],
+            "metrics": {},
+        }
+
+
+def measure(args: argparse.Namespace, device: str) -> dict:
+    """Run the timed pass and describe what it moved."""
     on_gpu = loader.is_cuda(device)
     llm = LLM(args.model, device=device, dtype=DTYPES[args.dtype])
     requests = build_workload(
@@ -271,39 +316,13 @@ def bench(args: argparse.Namespace) -> dict:
     decode_bytes = decode_bytes_read(
         decode_groups(requests, args.mode, args.batch_size), weights, kv_per_token
     )
-    env = environment(device)
-    peak_bytes_s = hardware.peak_hbm_bytes_s(env.get("gpu"))
+    record = identity(args, device)
+    peak_bytes_s = hardware.peak_hbm_bytes_s(record["environment"].get("gpu"))
     decode_time = timing.decode_s
     decode_steps = timing.decode_steps
-    commit, dirty = git_state()
-    now = datetime.now(timezone.utc)
-    return {
-        # The device is in the name because mixing records from different
-        # machines is the easiest way to break rule 1 by accident, and a
-        # directory listing is where that gets caught. The exact chip lives in
-        # `environment`; to keep whole machines apart, give each its own
-        # --output-dir rather than lengthening the name.
-        "run_id": f"{now:%Y%m%d-%H%M%S}-{device}-{args.mode}-{args.workload}"
-        f"-{uuid.uuid4().hex[:6]}",
-        "date": now.isoformat(timespec="seconds"),
-        "commit": commit,
-        "dirty": dirty,
-        "model": args.model,
-        "device": device,
-        "environment": env,
-        "engine_mode": args.mode,
-        "load": "offline-drain",
-        "workload": args.workload,
+    return record | {
         "workload_stats": workload_stats(requests),
-        "num_requests": args.num_requests,
-        "seed": args.seed,
-        "config": {
-            "dtype": args.dtype,
-            "batch_size": args.batch_size if args.mode == "static" else None,
-            "num_waves": (
-                args.num_requests // args.batch_size if args.mode == "static" else None
-            ),
-        },
+        "status": "ok",
         "metrics": {
             "wall_time_s": wall,
             "prefill_time_s": timing.prefill_s,
@@ -353,10 +372,16 @@ def main(argv: list[str] | None = None) -> dict:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     path = args.output_dir / f"{record['run_id']}.json"
     path.write_text(json.dumps(record, indent=2) + "\n")
-    print(json.dumps(record["metrics"], indent=2))
+    if record["status"] == "oom":
+        print(f"out of memory: {record['error']}", file=sys.stderr)
+    else:
+        print(json.dumps(record["metrics"], indent=2))
     print(f"wrote {path}")
     return record
 
 
 if __name__ == "__main__":
-    main()
+    # A recorded ceiling is neither a success nor a crash, and the sweep driver
+    # tells the three apart by exit code: it stops raising the batch size for
+    # this workload on OOM, and keeps going on anything else.
+    raise SystemExit(OOM_EXIT if main()["status"] == "oom" else 0)
