@@ -54,6 +54,55 @@ def test_harness_writes_a_complete_record(tiny_checkpoint_path, tmp_path):
     assert metrics["peak_gpu_memory_reserved_bytes"] is None
 
 
+def test_out_of_memory_is_recorded_rather_than_raised(
+    tiny_checkpoint_path, tmp_path, monkeypatch, capsys
+):
+    """The batch size that did not fit is the sweep's capacity ceiling, so it
+    has to survive as a record -- identified like any other point on the curve
+    -- instead of leaving a hole a later reader cannot explain."""
+
+    def out_of_memory(*args, **kwargs):
+        raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 20.00 GiB")
+
+    monkeypatch.setattr("benchmarks.bench_throughput.LLM", out_of_memory)
+
+    record = main(
+        bench_args(
+            tiny_checkpoint_path,
+            tmp_path,
+            **{"--mode": "static", "--batch-size": "2", "--num-requests": "2"},
+        )
+    )
+
+    (path,) = tmp_path.glob("*.json")
+    assert json.loads(path.read_text()) == record
+    assert record["status"] == "oom"
+    assert "out of memory" in record["error"].lower()
+    assert record["metrics"] == {}
+    # Identified exactly like a completed run, which is what lets the sweep
+    # recognize the ceiling on a restart.
+    assert record["config"]["batch_size"] == 2
+    assert record["workload"] == "uniform-512x128"
+    assert record["engine_mode"] == "static"
+    assert record["environment"]["torch"]
+    assert "out of memory" in capsys.readouterr().err.lower()
+
+
+def test_only_an_allocation_failure_counts_as_a_ceiling(
+    tiny_checkpoint_path, tmp_path, monkeypatch
+):
+    """Swallowing anything else would file a bug as a capacity result."""
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("shapes do not match")
+
+    monkeypatch.setattr("benchmarks.bench_throughput.LLM", broken)
+
+    with pytest.raises(RuntimeError, match="shapes do not match"):
+        main(bench_args(tiny_checkpoint_path, tmp_path))
+    assert not list(tmp_path.glob("*.json"))
+
+
 def test_dirty_ignores_untracked_files(tmp_path):
     """The harness writes its records into the repository, so untracked files
     must not count: otherwise every run after the first is flagged dirty for

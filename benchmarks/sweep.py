@@ -10,8 +10,15 @@ matter more than anything else this file does:
 - **A failed trial does not end the sweep.** Running out of memory at a large
   batch size is a *result*: it is where capacity ran out. Aborting there would
   also discard every trial still queued behind it.
+- **The ceiling is found once.** A batch size that ran out of memory records
+  that fact, and every larger size on the same workload is then taken as
+  hopeless rather than attempted -- memory demand only rises with the batch
+  size, so the rest of the ladder would buy a model load apiece to confirm
+  what the first failure already established. Other workloads keep going.
 - **Resumable.** Trials already recorded are skipped, so an interrupted sweep
-  can be restarted without re-paying for what it has.
+  can be restarted without re-paying for what it has -- including the
+  out-of-memory records, which put the ceiling back before the restart can
+  climb into it again.
 
 Usage (from the repo root):
     python -m benchmarks.sweep --model Qwen/Qwen3-8B --dtype bfloat16 \
@@ -25,7 +32,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from benchmarks.bench_throughput import DTYPES, RESULTS_DIR, check_whole_waves
+from benchmarks.bench_throughput import (
+    DTYPES,
+    OOM_EXIT,
+    RESULTS_DIR,
+    check_whole_waves,
+)
 from benchmarks.workloads import WORKLOADS
 
 
@@ -53,13 +65,20 @@ def trial_id(conditions: Conditions, trial: Trial) -> TrialId:
     return (conditions, trial)
 
 
-def recorded_trials(output_dir: Path) -> set[TrialId]:
-    """Ids of the trials `output_dir` already holds records for."""
-    ids = set()
+def recorded_trials(output_dir: Path) -> dict[TrialId, str]:
+    """The trials `output_dir` already holds records for, each mapped to how it
+    ended.
+
+    How it ended matters as much as that it ran: a resumed sweep has to
+    rediscover the ceiling a previous one found, or it walks straight back into
+    it at the next batch size up. Records written before the field existed
+    finished, so they read as "ok".
+    """
+    ids = {}
     for path in sorted(output_dir.glob("*.json")):
         try:
             record = json.loads(path.read_text())
-            ids.add(
+            ids[
                 trial_id(
                     Conditions(
                         record["model"],
@@ -73,7 +92,7 @@ def recorded_trials(output_dir: Path) -> set[TrialId]:
                         record["config"]["batch_size"],
                     ),
                 )
-            )
+            ] = record.get("status", "ok")
         except (OSError, ValueError, KeyError):
             continue  # not one of ours, or written by a run that died
     return ids
@@ -95,10 +114,37 @@ def label(trial: Trial) -> str:
 
 
 def exit_code(ran: int, failed: int) -> int:
+    """Nonzero only when the sweep itself is broken. Trials that ran out of
+    memory measured their ceiling, so they count as neither."""
     return 1 if failed and ran == 0 else 0
 
 
-def run(args: argparse.Namespace, trial: Trial) -> bool:
+def note_ceiling(ceiling: dict[str, int], trial: Trial) -> None:
+    """Remember the smallest batch size that did not fit on this workload."""
+    if trial.batch_size is None:
+        return  # the sequential baseline is not on the batch-size ladder
+    limit = ceiling.get(trial.workload, trial.batch_size)
+    ceiling[trial.workload] = min(limit, trial.batch_size)
+
+
+def over_ceiling(ceiling: dict[str, int], trial: Trial) -> bool:
+    """Whether a batch size this workload has already failed to fit is at or
+    below this one.
+
+    Memory demand rises with the batch size, so every size above one that ran
+    out is a foregone conclusion -- and confirming it costs a model load apiece
+    to learn nothing. The assumption is only safe within a workload: sizes are
+    compared against the ceiling of their own curve, never against another
+    workload's.
+    """
+    limit = ceiling.get(trial.workload)
+    return (
+        limit is not None and trial.batch_size is not None and trial.batch_size >= limit
+    )
+
+
+def run(args: argparse.Namespace, trial: Trial) -> str:
+    """Run one trial in its own process: "ok", "oom", or "failed"."""
     command = [
         sys.executable,
         "-m",
@@ -122,7 +168,13 @@ def run(args: argparse.Namespace, trial: Trial) -> bool:
         command += ["--batch-size", str(trial.batch_size)]
     if args.device is not None:
         command += ["--device", args.device]
-    return subprocess.run(command).returncode == 0
+    code = subprocess.run(command).returncode
+    if code == 0:
+        return "ok"
+    # Only a trial that recognized its own allocation failure and recorded it
+    # exits this way. Any other nonzero code is a crash, and reading a crash as
+    # a capacity ceiling would silently truncate the curve.
+    return "oom" if code == OOM_EXIT else "failed"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,20 +213,41 @@ def main(argv: list[str] | None = None) -> int:
     recorded = recorded_trials(args.output_dir)
     fixed = Conditions(args.model, args.dtype, args.num_requests, args.seed)
     trials = plan(args)
-    skipped, failed = [], []
+    skipped, oom, unfit, failed = [], [], [], []
+    ceiling: dict[str, int] = {}
     for index, trial in enumerate(trials, start=1):
         progress = f"[{index}/{len(trials)}] {label(trial)}"
-        if trial_id(fixed, trial) in recorded:
+        status = recorded.get(trial_id(fixed, trial))
+        if status is not None:
             print(f"{progress}: already recorded, skipping")
             skipped.append(trial)
+            if status == "oom":
+                note_ceiling(ceiling, trial)
+            continue
+        if over_ceiling(ceiling, trial):
+            limit = ceiling[trial.workload]
+            print(f"{progress}: not attempted, bs={limit} already ran out of memory")
+            unfit.append(trial)
             continue
         print(progress)
-        if not run(args, trial):
+        outcome = run(args, trial)
+        if outcome == "oom":
+            print(f"  OUT OF MEMORY: {label(trial)}; the ceiling for this workload")
+            note_ceiling(ceiling, trial)
+            oom.append(trial)
+        elif outcome == "failed":
             print(f"  FAILED: {label(trial)}", file=sys.stderr)
             failed.append(trial)
 
-    ran = len(trials) - len(skipped) - len(failed)
-    print(f"\n{ran} run, {len(skipped)} skipped, {len(failed)} failed")
+    ran = len(trials) - len(skipped) - len(oom) - len(unfit) - len(failed)
+    print(
+        f"\n{ran} run, {len(skipped)} skipped, {len(oom)} out of memory, "
+        f"{len(unfit)} not attempted, {len(failed)} failed"
+    )
+    for trial in oom:
+        print(f"  out of memory: {label(trial)}")
+    for trial in unfit:
+        print(f"  not attempted: {label(trial)}")
     for trial in failed:
         print(f"  failed: {label(trial)}")
     return exit_code(ran, len(failed))
