@@ -211,3 +211,20 @@ it. Tests that need it skip on a machine that is both uncached and offline.
 ```bash
 uv build
 ```
+
+## Site
+
+The project site at <https://lxynov.github.io/tiny-llm-serve/> is built from
+`site/` and deploys on every push to `main` that touches it.
+
+```bash
+cd site
+npm install
+npm run dev      # http://localhost:3000/tiny-llm-serve/ — drafts visible, live reload
+npm run preview  # http://localhost:4000/tiny-llm-serve/ — exactly what deploys, drafts hidden
+npm run build    # writes dist/
+npm run new "A post title"
+
+```
+
+See [`site/README.md`](site/README.md).
