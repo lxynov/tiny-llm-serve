@@ -1,14 +1,43 @@
 import argparse
+import os
 import sys
 import time
 from dataclasses import dataclass, replace
 
 import torch
+from torch.profiler import ProfilerActivity, profile
 
 from tiny_llm_serve.engine.sampling_params import SamplingParams
 from tiny_llm_serve.kv import NaiveKVCache, PreallocatedKVManager
 from tiny_llm_serve.layers.sampler import Sampler
 from tiny_llm_serve.models import loader
+
+# See docs/raising-decode-mbu.md item 1: settle which SDPA backend decode
+# actually dispatches to before working on anything downstream of it.
+_DEBUG_PROFILE_DECODE = bool(os.environ.get("TINY_LLM_SERVE_DEBUG_PROFILE_DECODE"))
+_profiled_decode_step = False
+
+
+def _profile_once(step):
+    """Run `step` under torch.profiler the first time this fires, and print
+    the kernel table so it's visible which SDPA backend decode used."""
+    global _profiled_decode_step
+    if not _DEBUG_PROFILE_DECODE or _profiled_decode_step:
+        return step()
+    _profiled_decode_step = True
+    activities = [ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(ProfilerActivity.CUDA)
+    with profile(activities=activities, record_shapes=True) as prof:
+        result = step()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    sort_by = "cuda_time_total" if torch.cuda.is_available() else "cpu_time_total"
+    print(
+        prof.key_averages(group_by_input_shape=True).table(sort_by=sort_by, row_limit=25),
+        file=sys.stderr,
+    )
+    return result
 
 
 @dataclass
@@ -189,8 +218,10 @@ class LLM:
             # step stays well-formed for any vocab, and discard their output.
             feed = torch.where(finished, seen_ids[:, 0], next_ids)
             seen_ids = torch.cat((seen_ids, feed.unsqueeze(1)), dim=1)
-            logits = self.model(
-                feed.unsqueeze(1), lens.unsqueeze(1), manager.begin_decode(slots)
+            logits = _profile_once(
+                lambda: self.model(
+                    feed.unsqueeze(1), lens.unsqueeze(1), manager.begin_decode(slots)
+                )
             )
             step_logits = logits[:, 0]
             lens = lens + 1

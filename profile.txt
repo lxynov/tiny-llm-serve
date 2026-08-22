@@ -1,0 +1,61 @@
+➜  tiny-llm-serve git:(main-aug20-temp-profile) TINY_LLM_SERVE_DEBUG_PROFILE_DECODE=1 uv run python -m benchmarks.bench_throughput \
+  --model Qwen/Qwen3-0.6B --workload uniform-512x128 \
+  --mode static --batch-size 64 --num-requests 64
+Downloading bytes:                                                                                                                                             |  0.00B            Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.              |  0.00B / 1.51GB            
+Fetching 10 files: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 10/10 [00:05<00:00,  1.83it/s]
+Download complete: : ██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1.06GB,  901MB/s  
+Reconstruction complete: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1.52GB / 1.52GB,  542MB/s  
+USDT:2026-08-23 02:00:20 1969:1969 SyncActivityProfilerHandler.cpp:52] profiler_start
+USDT:2026-08-23 02:00:20 1969:1969 SyncActivityProfilerHandler.cpp:59] profiler_stop
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  --------------------------------------------------------------------------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls                                                                      Input Shapes  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  --------------------------------------------------------------------------------  
+                     aten::scaled_dot_product_attention         1.35%       1.376ms        31.26%      31.769ms       1.135ms       0.000us         0.00%      24.810ms     886.068us            28  [[64, 16, 1, 128], [64, 8, 513, 128], [64, 8, 513, 128], [64, 1, 1, 513], [], []  
+               aten::_scaled_dot_product_attention_math         0.64%     646.027us        28.21%      28.668ms       1.024ms       0.000us         0.00%      24.679ms     881.407us            28  [[64, 16, 1, 128], [64, 8, 513, 128], [64, 8, 513, 128], [64, 1, 1, 513], [], []  
+                                aten::repeat_interleave         0.29%     294.171us         3.51%       3.571ms      63.776us       0.000us         0.00%      11.954ms     213.472us            56                                                   [[64, 8, 513, 128], [], [], []]  
+                                            aten::clone         1.95%       1.978ms         2.83%       2.874ms      51.327us       0.000us         0.00%      11.954ms     213.472us            56                                                        [[64, 8, 2, 513, 128], []]  
+                                            aten::copy_         0.33%     331.085us         0.56%     572.404us      10.221us      11.954ms        33.92%      11.954ms     213.472us            56                                  [[64, 8, 2, 513, 128], [64, 8, 2, 513, 128], []]  
+void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us      11.954ms        33.92%      11.954ms     213.472us            56                                                                                []  
+void at::native::vectorized_gather_kernel<16, long>(...         0.00%       0.000us         0.00%       0.000us       0.000us       5.431ms        15.41%       5.431ms      48.059us           113                                                                                []  
+                                            aten::index         0.66%     669.570us         0.99%       1.002ms      17.896us       5.339ms        15.15%       5.339ms      95.338us            56                                                           [[64, 513, 8, 128], []]  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       5.069ms        14.38%       5.069ms      90.515us            56                                                                                []  
+                                              aten::mul         0.27%     274.976us         0.38%     381.705us      13.632us       5.012ms        14.22%       5.012ms     178.989us            28                                                          [[64, 16, 128, 513], []]  
+                                           aten::matmul         0.32%     325.636us        18.91%      19.212ms     686.156us       0.000us         0.00%       4.351ms     155.385us            28                                            [[64, 16, 1, 128], [64, 16, 128, 513]]  
+                                              aten::bmm         3.76%       3.825ms        18.24%      18.535ms     661.948us       4.059ms        11.52%       4.351ms     155.385us            28                                                [[1024, 1, 128], [1024, 128, 513]]  
+std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       4.059ms        11.52%       4.059ms     144.955us            28                                                                                []  
+                                           aten::matmul         0.32%     329.786us         1.66%       1.690ms      60.373us       0.000us         0.00%       2.834ms     101.206us            28                                            [[64, 16, 1, 513], [64, 16, 513, 128]]  
+                                              aten::bmm         0.79%     804.137us         0.97%     989.247us      35.330us       2.735ms         7.76%       2.834ms     101.206us            28                                                [[1024, 1, 513], [1024, 513, 128]]  
+std::enable_if<!(false), void>::type internal::gemvx...         0.00%       0.000us         0.00%       0.000us       0.000us       2.735ms         7.76%       2.735ms      97.691us            28                                                                                []  
+sm80_xmma_gemm_f32f32_f32f32_f32_tn_n_tilesize64x64x...         0.00%       0.000us         0.00%       0.000us       0.000us       2.492ms         7.07%       2.492ms      22.052us           113                                                                                []  
+void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     882.842us         2.51%     882.842us       1.847us           478                                                                                []  
+                                           aten::linear         0.07%      70.014us         1.37%       1.391ms      49.689us       0.000us         0.00%     835.106us      29.825us            28                                                 [[64, 1, 1024], [6144, 1024], []]  
+                                           aten::matmul         0.14%     139.020us         1.09%       1.112ms      39.717us       0.000us         0.00%     835.106us      29.825us            28                                                     [[64, 1, 1024], [1024, 6144]]  
+                                               aten::mm         0.57%     581.799us         0.82%     831.809us      29.707us     835.106us         2.37%     835.106us      29.825us            28                                                        [[64, 1024], [1024, 6144]]  
+                                           aten::linear         0.07%      69.522us         1.13%       1.147ms      40.966us       0.000us         0.00%     639.455us      22.838us            28                                                 [[64, 1, 1024], [4096, 1024], []]  
+                                           aten::matmul         0.11%     115.370us         0.94%     957.382us      34.192us       0.000us         0.00%     639.455us      22.838us            28                                                     [[64, 1, 1024], [1024, 4096]]  
+                                               aten::mm         0.50%     505.251us         0.76%     768.162us      27.434us     617.087us         1.75%     639.455us      22.838us            28                                                        [[64, 1024], [1024, 4096]]  
+                                           aten::linear         0.10%      97.643us         1.21%       1.231ms      43.952us       0.000us         0.00%     574.241us      20.509us            28                                                 [[64, 1, 3072], [1024, 3072], []]  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  --------------------------------------------------------------------------------  
+Self CPU time total: 101.617ms
+Self CUDA time total: 35.238ms
+
+{
+  "wall_time_s": 7.9071198948659,
+  "prefill_time_s": 1.6489846520125866,
+  "decode_time_s": 6.257573557086289,
+  "decode_steps": 127,
+  "s_per_decode_step": 0.049272232732962905,
+  "prompt_tokens": 32768,
+  "output_tokens": 8192,
+  "output_tok_s": 1036.0283022038243,
+  "total_tok_s": 5180.141511019121,
+  "decode_bytes_read": 1376669401088,
+  "mbu": 0.06567179532578496,
+  "weight_bytes": 2384199680,
+  "kv_bytes_reserved": 9395240960,
+  "peak_gpu_memory_allocated_bytes": 16265517568,
+  "peak_gpu_memory_reserved_bytes": 16894656512,
+  "peak_concurrent_seqs": 64,
+  "kv_efficiency": 1.0
+}
+wrote /workspace/tiny-llm-serve/benchmarks/results/20260823-020026-cuda-static-uniform-512x128-54225e.json
