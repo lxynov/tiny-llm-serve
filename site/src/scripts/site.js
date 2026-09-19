@@ -23,10 +23,27 @@ function initTheme() {
       root.dataset.theme = next
       localStorage.setItem('theme', next)
     }
+    syncThemeImages()
     syncGiscusTheme()
   })
 
-  darkQuery.addEventListener('change', syncGiscusTheme)
+  darkQuery.addEventListener('change', () => {
+    syncThemeImages()
+    syncGiscusTheme()
+  })
+}
+
+// --- Theme-paired figures --------------------------------------------------
+// `<picture>` already follows the OS preference on its own; this only has to
+// take over when the toggle overrides it. Setting an unconditional media query
+// either way is simpler than restoring the original one, since `activeTheme()`
+// has already folded the OS preference in.
+
+function syncThemeImages() {
+  const dark = activeTheme() === 'dark'
+  for (const source of document.querySelectorAll('picture source[data-theme="dark"]')) {
+    source.media = dark ? 'all' : 'not all'
+  }
 }
 
 // --- Table of contents -----------------------------------------------------
@@ -211,6 +228,7 @@ function syncGiscusTheme() {
 // --- Boot ------------------------------------------------------------------
 
 initTheme()
+syncThemeImages() // a stored override is applied before this script runs
 initToc()
 initCopyButtons()
 initComments()

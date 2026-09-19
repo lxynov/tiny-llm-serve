@@ -4,7 +4,7 @@ import { esc, parseDate, absolute } from './templates.js'
 
 /** Rewrite root-relative links so they still resolve inside a feed reader. */
 function absolutize(html, base) {
-  return html.replace(/\b(href|src)="\/(?!\/)/g, `$1="${base}/`)
+  return html.replace(/\b(href|src|srcset)="\/(?!\/)/g, `$1="${base}/`)
 }
 
 export function renderFeed({ config, posts }) {

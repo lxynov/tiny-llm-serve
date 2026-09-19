@@ -63,6 +63,19 @@ highlighter shipped to readers. Math is rendered at build time by KaTeX
 contain math. Also supported: GFM tables, footnotes, smart quotes, and a lone
 `![alt](img.png)` in a paragraph becoming a `<figure>` with the alt as caption.
 
+A chart usually needs a light rendering and a dark one. Drop both files in
+`src/public/`, name them `…-light.png` and `…-dark.png`, and write `{theme}`
+where the variant goes:
+
+```markdown
+![Output tokens per second](/images/throughput-{theme}.png)
+```
+
+That becomes a `<picture>` whose `<source>` carries
+`media="(prefers-color-scheme: dark)"`, so the OS preference is honoured with
+JavaScript off and feed readers see one image rather than both. `site.js`
+retargets the source when a reader overrides the OS with the theme toggle.
+
 Headings `##` and `###` get anchor links and populate the table of contents.
 
 ## Deploying
