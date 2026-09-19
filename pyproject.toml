@@ -41,6 +41,9 @@ unused-ignore = true
 
 [dependency-groups]
 dev = [
+    # Only `benchmarks.report --plot` imports it, and it does so lazily: a
+    # report printed to a terminal should not pay for a plotting stack.
+    "matplotlib>=3.11.1",
     "pdbpp>=0.12.1",
     "pyrefly>=1.1.1",
     "pytest>=9.1.1",

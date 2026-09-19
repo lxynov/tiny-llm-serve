@@ -166,6 +166,87 @@ names — this one keeps the two apart.
 | `peak_concurrent_seqs` | Most sequences in flight at once |
 | `kv_efficiency` | KV tokens actually used ÷ KV tokens reserved. Sequential mode's naive cache reserves exactly what it uses (1.0); preallocated batching reserves whole slots up front, and this ratio is the number that indicts it |
 
+### Reports
+
+A sweep folder is written to be read by a machine: one JSON record per trial
+next to an index over them. `benchmarks/report.py` turns one back into
+something a person can read.
+
+```bash
+uv run python -m benchmarks.report benchmarks/results/qwen3-8b-bfloat16-n512-seed0-cuda
+```
+
+It prints a table per workload — every trial in the grid, including the ones
+with no record behind them — and four summary lines: where throughput peaked
+and how far short of linear it fell, what the last doubling bought, the band of
+memory bandwidth decode actually reached, and the batch size the ceiling ruled
+out. `--markdown` emits the tables for pasting; `--plot DIR` writes throughput,
+decode-step and occupancy curves there (the only thing here that needs
+matplotlib, imported lazily so a report to a terminal does not pay for it).
+
+### Curves
+
+`benchmarks/figures.py` draws them in the notebook's own palette and type, so a
+figure dropped into a post reads as part of the page rather than as a
+screenshot from somewhere else: ink on paper, one hairline rule, no accent
+colour, and workloads told apart by lightness, marker shape and a label at the
+end of each line rather than by hue. Where a sweep hit a ceiling the curve
+carries a dotted stub out to the batch size that failed and ends in a cross;
+on the throughput panel a slope-one guide from the smallest batch shows what
+perfect scaling would have looked like, since on log-log axes falling short of
+it is otherwise invisible.
+
+Two consequences are worth knowing before publishing one:
+
+**Every figure is written twice**, `-light` and `-dark`, because the site has a
+theme toggle and a figure baked in one theme is a bright rectangle in a dark
+column half the time. `--theme light` or `--theme dark` writes only one;
+`--format svg` (or `both`) writes vector instead of, or alongside, the PNG. A
+post asks for the pair by writing `{theme}` where the variant goes, and the
+site serves whichever matches:
+
+```markdown
+![Output tokens per second](/images/qwen3-8b-...-throughput-{theme}.png)
+```
+
+**The two typefaces are vendored**, under `benchmarks/assets/fonts/` — static
+instances of the same Source Serif 4 and JetBrains Mono the site serves, with
+their OFL licences beside them. They are pinned for the reason a commit is: so
+a figure drawn on a laptop and one drawn in CI are the same figure. Delete them
+and matplotlib falls back through the page's own CSS stack — Charter, then
+Georgia — which changes the letterforms and nothing else.
+
+Three columns are the report's own, computed from the records rather than read
+out of them:
+
+| Column | Definition |
+|---|---|
+| `pre%` | `prefill_time_s ÷ wall_time_s`. Small at low batch sizes and not small for long: decode speeds up with the batch and prefill does not, so this is the share of the pass that batching cannot touch, and the ceiling any decode work runs into |
+| `speedup` | Throughput against the smallest batch size that ran — against the smallest rather than against 1, since a sweep that skipped bs=1 still has a baseline of its own. Read next to the summary's *% of linear*, which is this divided by the batch-size ratio that produced it |
+| `occ` | Fraction of decode slots that held a sequence still generating. A wave runs until its *longest* output finishes, so every sequence that finished earlier keeps its slot in every later step; `1 − occ` is the compute static batching spends on sequences that are already done. Derived, not measured: a wave's first token falls out of the prefill logits, so the step loop produced `output_tokens − num_requests` tokens across `decode_steps × batch_size` slots |
+
+`occ` is the companion `kv_efficiency` needs, not a restatement of it: one counts
+reserved KV, the other counts the steps run against it, and they come apart
+whenever prompts are more uniform than outputs. On `mixed-out` at bs=256 — 512
+tokens of prompt behind every long-tailed output — `kv_efficiency` reads 0.60
+while `occ` reads 0.20. The fixed prompt dominates the reservation and makes the
+memory look two-thirds used, while four decode slots in five are advancing a
+sequence that has already stopped.
+
+The report also checks the one thing rule 1 asks of a sweep that no single
+record can confirm and the folder's name does not promise: that every trial ran
+the same commit, dtype and GPU, and that none of them measured a dirty tree.
+The name is built from the flags, and the commit is not a flag — so a sweep
+resumed across an engine change looks exactly like one run in an afternoon,
+until a curve bends somewhere the engine did not change. Disagreements print as
+`WARNING` lines above the tables rather than failing: the records are still the
+results, they just are not a curve.
+
+Nothing in the report re-derives a workload to recover its lengths. A name and a
+seed reproduce a workload only while the generator behind the name is unchanged,
+and a report that quietly regenerated against today's version would describe a
+grid that was never run.
+
 ### Rules
 
 1. **One variable per comparison.** Same model, dtype, device, commit,
