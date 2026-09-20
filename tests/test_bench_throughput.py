@@ -239,8 +239,8 @@ def test_byte_accounting_matches_the_closed_form(tiny_checkpoint_path, tmp_path)
 
     metrics = record["metrics"]
     # The tiny config: 2 layers x 2 KV heads x 8 head_dim, keys and values,
-    # float32 -- 256 bytes per cached token.
-    per_token = 2 * 2 * 2 * 8 * 4
+    # bfloat16 -- 128 bytes per cached token.
+    per_token = 2 * 2 * 2 * 8 * 2
     # One wave of 2 slots, each reserving 512 prompt + 128 output tokens.
     assert metrics["kv_bytes_reserved"] == 2 * (512 + 128) * per_token
     assert metrics["weight_bytes"] > 0
