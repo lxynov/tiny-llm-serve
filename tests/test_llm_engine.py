@@ -27,6 +27,22 @@ def greedy(max_tokens: int, **kwargs) -> SamplingParams:
     return SamplingParams(temperature=0.0, max_tokens=max_tokens, **kwargs)
 
 
+def only_in_first(text: str, other: str, width: int = 3) -> str:
+    """A short slice of `text` that `other` does not contain, so a stop string
+    built from it finishes one row of a batch and not the row beside it."""
+    for i in range(1, len(text) - width):  # never at 0: leave the row an output
+        if text[i : i + width] not in other:
+            return text[i : i + width]
+    raise AssertionError(f"every slice of {text!r} also appears in {other!r}")
+
+
+def generate_alone(llm: LLM, prompt: str | list[int], params: SamplingParams):
+    """Decode one prompt (text or ids) as a batch of one -- the engine's only
+    path, and the reference a wider batch has to reproduce."""
+    ids = llm.tokenizer.encode(prompt) if isinstance(prompt, str) else prompt
+    return llm.generate_batch_ids([ids], params)[0]
+
+
 @lru_cache(maxsize=None)
 def load_llm(model_path: str, device: str, dtype: torch.dtype = torch.float32) -> LLM:
     """Cache one LLM per (checkpoint, backend, dtype) so parametrized tests reuse it."""
@@ -65,7 +81,7 @@ def greedy_parity(
     """Greedy-decode `prompt` with both engines; return (ours, HF's) token ids."""
     llm = load_llm(model_path, device, dtype)
     text = resolve_prompt(llm.tokenizer, prompt)
-    ours = llm.generate_ids(text, greedy(PARITY_MAX_TOKENS))
+    ours = generate_alone(llm, text, greedy(PARITY_MAX_TOKENS))
 
     eos = llm.tokenizer.eos_token_id
     input_ids = torch.tensor([llm.tokenizer.encode(text)], device=device)
@@ -124,12 +140,13 @@ def test_parity_with_hf_greedy(qwen3_path, device, prompt, dtype):
 
 
 @backends("cpu")
-def test_pretokenized_prompt_matches_text_prompt(qwen3_path, device):
+def test_text_wrapper_matches_pretokenized_prompt(qwen3_path, device):
+    """`generate` only encodes and trims; the ids path decides the tokens."""
     llm = load_llm(str(qwen3_path), device)
     prompt_ids = llm.tokenizer.encode(PROMPT)
 
-    from_ids = llm.generate_ids(prompt_ids, greedy(8))
-    from_text = llm.generate_ids(PROMPT, greedy(8))
+    from_ids = llm.tokenizer.decode(llm.generate_batch_ids([prompt_ids], greedy(8))[0])
+    from_text = llm.generate(PROMPT, greedy(8))
 
     assert from_ids == from_text
 
@@ -141,8 +158,8 @@ def test_ignore_eos_generates_exactly_max_tokens(qwen3_path, device):
     prompt = resolve_prompt(llm.tokenizer, CHAT)  # a short answer, then EOS
     budget = 48
 
-    baseline = llm.generate_ids(prompt, greedy(budget))
-    forced = llm.generate_ids(prompt, greedy(budget, ignore_eos=True))
+    baseline = generate_alone(llm, prompt, greedy(budget))
+    forced = generate_alone(llm, prompt, greedy(budget, ignore_eos=True))
 
     assert len(baseline) < budget  # EOS actually fired within the budget
     assert len(forced) == budget
@@ -165,15 +182,15 @@ def test_generate_stops_before_stop_substring(qwen3_path, device):
 
 
 @backends("all")
-def test_generate_ids_stops_decoding_at_stop_substring(qwen3_path, device):
+def test_stop_substring_halts_decoding(qwen3_path, device):
     llm = load_llm(str(qwen3_path), device)
-    baseline_ids = llm.generate_ids(PROMPT, greedy(20))
+    baseline_ids = generate_alone(llm, PROMPT, greedy(20))
     baseline = llm.tokenizer.decode(baseline_ids)
     assert len(baseline) > 4
 
     stop_str = baseline[len(baseline) // 2 : len(baseline) // 2 + 3]
 
-    output_ids = llm.generate_ids(PROMPT, greedy(20, stop=[stop_str]))
+    output_ids = generate_alone(llm, PROMPT, greedy(20, stop=[stop_str]))
 
     # The decode loop must stop at the stop string, not run out `max_tokens`.
     assert 0 < len(output_ids) < len(baseline_ids)
@@ -196,7 +213,7 @@ RAGGED_PROMPTS = [
 
 
 @backends("all")
-def test_static_batch_matches_sequential_on_tiny_model(tiny_checkpoint_path, device):
+def test_static_batch_matches_one_at_a_time_on_tiny_model(tiny_checkpoint_path, device):
     """Day-9 definition of done: a static batch of 4 tiny-model sequences of
     different lengths and budgets produces exactly the tokens each would get
     alone.
@@ -205,7 +222,7 @@ def test_static_batch_matches_sequential_on_tiny_model(tiny_checkpoint_path, dev
     prompt to its own constant token, so a row served another row's slot shows
     up immediately. It does not pin masking: random weights make the argmax
     indifferent to attention numerics, so a missing decode mask survives here
-    at any length spread. test_static_batch_matches_sequential_on_qwen covers
+    at any length spread. test_static_batch_matches_one_at_a_time_on_qwen covers
     that.
     """
     llm = load_llm(str(tiny_checkpoint_path), device)
@@ -213,13 +230,13 @@ def test_static_batch_matches_sequential_on_tiny_model(tiny_checkpoint_path, dev
     params = [greedy(n) for n in budgets]
 
     batch = llm.generate_batch_ids(TINY_PROMPTS, params)
-    sequential = [llm.generate_ids(p, greedy(n)) for p, n in zip(TINY_PROMPTS, budgets)]
+    alone = [generate_alone(llm, p, greedy(n)) for p, n in zip(TINY_PROMPTS, budgets)]
 
-    assert batch == sequential
+    assert batch == alone
 
 
 @backends("all")
-def test_static_batch_matches_sequential_on_qwen(qwen3_path, device):
+def test_static_batch_matches_one_at_a_time_on_qwen(qwen3_path, device):
     """Real-weight equivalence, where EOS can fire and rows finish at
     different steps while the rest of the batch continues.
 
@@ -230,9 +247,25 @@ def test_static_batch_matches_sequential_on_qwen(qwen3_path, device):
     llm = load_llm(str(qwen3_path), device)
 
     batch = llm.generate_batch(RAGGED_PROMPTS, greedy(10))
-    sequential = [llm.generate(p, greedy(10)) for p in RAGGED_PROMPTS]
+    alone = [llm.generate(p, greedy(10)) for p in RAGGED_PROMPTS]
 
-    assert batch == sequential
+    assert batch == alone
+
+
+@backends("all")
+def test_stop_finishes_one_row_and_leaves_the_rest_running(qwen3_path, device):
+    """A stop string is a per-row finish: the row that hits it idles in its
+    slot while the others decode their full budget, untouched."""
+    llm = load_llm(str(qwen3_path), device)
+    prompts = RAGGED_PROMPTS[:2]
+    baseline = llm.generate_batch(prompts, greedy(20))
+    stop_str = only_in_first(baseline[0], baseline[1])
+
+    stopped = llm.generate_batch(prompts, greedy(20, stop=[stop_str]))
+
+    assert stop_str not in stopped[0]
+    assert len(stopped[0]) < len(baseline[0])
+    assert stopped[1] == baseline[1]
 
 
 @backends("cpu")
@@ -256,8 +289,6 @@ def test_static_batch_raises_when_slots_overflow(tiny_checkpoint_path, device):
 def test_static_batch_rejects_unsupported_params(tiny_checkpoint_path):
     llm = load_llm(str(tiny_checkpoint_path), "cpu")
 
-    with pytest.raises(ValueError, match="stop strings"):
-        llm.generate_batch_ids([[1], [2]], greedy(4, stop=["x"]))
     with pytest.raises(ValueError, match="only in max_tokens"):
         llm.generate_batch_ids(
             [[1], [2]], [greedy(4), SamplingParams(temperature=0.8, max_tokens=4)]

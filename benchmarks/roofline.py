@@ -37,7 +37,7 @@ def decode_bytes_read(
     """Bytes decode has to move, at minimum, to produce a pass's tokens.
 
     A group is (sequences, the KV length they start from, decode steps) --
-    a static wave, a sequential request, or the window a microbenchmark timed.
+    a decode wave, or the window a microbenchmark timed.
 
     Every step re-reads all the weights to advance each sequence by one token,
     so the weight term is charged once per *step* rather than once per

@@ -68,7 +68,6 @@ def write_sweep(tmp_path, trials: list[tuple[dict, dict]], **index_extra):
 def entry(workload="mixed-out", batch_size=2, status="ok"):
     return {
         "workload": workload,
-        "mode": "static",
         "batch_size": batch_size,
         "status": status,
     }
@@ -132,6 +131,14 @@ def test_trials_from_different_commits_are_flagged():
     records = {"a.json": record(), "b.json": record(commit="999999999999")}
 
     assert any("commit" in problem for problem in inconsistencies(records))
+
+
+def test_trials_from_different_engine_modes_are_flagged():
+    """The tables key on batch size, so two engines in one folder would read as
+    one curve."""
+    records = {"a.json": record(), "b.json": record(engine_mode="continuous")}
+
+    assert any("engine_mode" in problem for problem in inconsistencies(records))
 
 
 def test_a_trial_measuring_uncommitted_code_is_flagged():

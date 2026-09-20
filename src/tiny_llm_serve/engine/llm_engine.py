@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 import torch
 
 from tiny_llm_serve.engine.sampling_params import SamplingParams
-from tiny_llm_serve.kv import NaiveKVCache, PreallocatedKVManager
+from tiny_llm_serve.kv import PreallocatedKVManager
 from tiny_llm_serve.layers.sampler import Sampler
 from tiny_llm_serve.models import loader
 
@@ -33,75 +33,13 @@ class LLM:
         loader.synchronize(self.device)
         return time.perf_counter()
 
-    @torch.inference_mode()
-    def generate_ids(
-        self,
-        prompt: str | list[int],
-        params: SamplingParams | None = None,
-        timing: Timing | None = None,
-    ) -> list[int]:
-        """Decode the completion token ids for `prompt` (text or token ids).
-
-        Accepting pre-tokenized prompts lets benchmarks keep tokenizer time out
-        of engine measurements. Stops at the EOS token, once a `params.stop`
-        substring appears in the decoded text, or after `params.max_tokens`,
-        whichever comes first. A stop string can end mid-token, so the ids may
-        overshoot it; `generate` trims exactly. `params=None` means greedy with
-        the default budget.
-        """
-        if params is None:
-            params = SamplingParams(temperature=0.0)
-        generator = None
-        if params.seed is not None:
-            generator = torch.Generator(device=self.device).manual_seed(params.seed)
-        prompt_ids = (
-            self.tokenizer.encode(prompt) if isinstance(prompt, str) else prompt
-        )
-        start = prefill_end = self._now() if timing is not None else 0.0
-        seen_ids = torch.tensor(prompt_ids, dtype=torch.long, device=self.device)
-        kv_cache = NaiveKVCache(self.model.config.num_hidden_layers)
-        positions = torch.arange(len(seen_ids), device=self.device)
-        step_logits = self.model(
-            seen_ids, positions, kv_cache, torch.tensor([-1], device=self.device)
-        )
-        if timing is not None:
-            prefill_end = self._now()
-            timing.prefill_s += prefill_end - start
-        output_ids: list[int] = []
-        for _ in range(params.max_tokens):
-            next_id = self.sampler(
-                step_logits, params, seen_ids.unsqueeze(0), generator
-            )
-            if not params.ignore_eos and next_id.item() == self.tokenizer.eos_token_id:
-                break
-            output_ids.append(next_id.item())
-            seen_ids = torch.cat((seen_ids, next_id))
-            if params.stop:
-                # TODO: O(n^2) — re-decodes and re-scans all output_ids each
-                # step. Replace with a streaming detokenizer (incremental
-                # decode + tail scan) when we add token streaming.
-                text = self.tokenizer.decode(output_ids)
-                if any(s in text for s in params.stop):
-                    break
-            positions = torch.tensor([kv_cache.seq_len], device=self.device)
-            step_logits = self.model(next_id, positions, kv_cache)
-            if timing is not None:
-                timing.decode_steps += 1
-        if timing is not None:
-            timing.decode_s += self._now() - prefill_end
-        return output_ids
-
     def generate(self, prompt: str, params: SamplingParams | None = None) -> str:
         """Decode a completion for `prompt` (raw text, no chat template).
 
         Stops at the EOS token, the first `params.stop` substring, or
         `params.max_tokens`, whichever comes first.
         """
-        text = self.tokenizer.decode(self.generate_ids(prompt, params))
-        stop = params.stop if params is not None else []
-        cuts = [text.index(s) for s in stop if s in text]
-        # decoding a flat id list yields a single str; the stub widens it to str | list[str]
-        return text[: min(cuts)] if cuts else text  # pyrefly: ignore[bad-return]
+        return self.generate_batch([prompt], params)[0]
 
     @torch.inference_mode()
     def generate_batch_ids(
@@ -111,16 +49,7 @@ class LLM:
         max_model_len: int | None = None,
         timing: Timing | None = None,
     ) -> list[list[int]]:
-        """Decode a static batch: one padded prefill, then lockstep decode.
-
-        A sequence that hits EOS or its max_tokens idles in its slot (still
-        stepped, output discarded) until the whole batch finishes; nothing new
-        is admitted mid-flight. `params` may be a list to vary max_tokens per
-        sequence. Each preallocated slot reserves `max_model_len` tokens
-        (default: sized so no sequence can outgrow it). Greedy batched output
-        matches sequential exactly; seeded sampling draws in batch order, so it
-        reproduces itself but not sequential runs.
-        """
+        """Decode a static batch: one padded prefill, then lockstep decode."""
         params_list = _batch_params(params, len(prompts))
         sampling_params = params_list[0]  # rows differ only in max_tokens
         generator = None
@@ -169,6 +98,7 @@ class LLM:
             seen_ids[i, n:] = seen_ids[i, 0]
 
         eos = self.tokenizer.eos_token_id
+        stop = sampling_params.stop
         outputs: list[list[int]] = [[] for _ in prompts]
         finished = torch.zeros(num_seqs, dtype=torch.bool, device=self.device)
         while True:
@@ -178,11 +108,17 @@ class LLM:
                     continue
                 if not sampling_params.ignore_eos and next_id == eos:
                     finished[i] = True
-                elif len(outputs[i]) + 1 == params_list[i].max_tokens:
-                    outputs[i].append(next_id)
+                    continue
+                outputs[i].append(next_id)
+                if len(outputs[i]) == params_list[i].max_tokens:
                     finished[i] = True
-                else:
-                    outputs[i].append(next_id)
+                elif stop:
+                    # TODO: O(n^2) -- re-decodes and re-scans a row's whole
+                    # output each step. Replace with a streaming detokenizer
+                    # (incremental decode + tail scan) when we add token
+                    # streaming.
+                    text = self.tokenizer.decode(outputs[i])
+                    finished[i] = any(s in text for s in stop)
             if bool(finished.all()):
                 break
             # Finished rows idle: feed their (already seen) first token so the
@@ -207,26 +143,33 @@ class LLM:
     ) -> list[str]:
         """Decode completions for `prompts` together (raw text, no chat
         template). See `generate_batch_ids` for the batching semantics."""
+        params_list = _batch_params(params, len(prompts))
         prompt_ids = [self.tokenizer.encode(p) for p in prompts]
-        outputs = self.generate_batch_ids(prompt_ids, params)
+        outputs = self.generate_batch_ids(prompt_ids, params_list)
+        stop = params_list[0].stop  # rows differ only in max_tokens
         # decoding a flat id list yields a single str; the stub widens it to str | list[str]
-        return [self.tokenizer.decode(o) for o in outputs]  # pyrefly: ignore[bad-return]
+        return [_trim(self.tokenizer.decode(o), stop) for o in outputs]  # pyrefly: ignore[bad-argument-type]
+
+
+def _trim(text: str, stop: list[str]) -> str:
+    """Cut `text` at the first stop substring. A stop string can end mid-token,
+    so the ids a row stopped on may run past it."""
+    cuts = [text.index(s) for s in stop if s in text]
+    return text[: min(cuts)] if cuts else text
 
 
 def _batch_params(
     params: SamplingParams | list[SamplingParams] | None, num_seqs: int
 ) -> list[SamplingParams]:
     """Normalize to one SamplingParams per sequence and reject what a single
-    batched sampler pass cannot honor: per-row sampling controls (only
-    max_tokens may vary) and stop strings (no incremental detokenization)."""
+    batched sampler pass cannot honor: per-row sampling controls, of which only
+    max_tokens may vary."""
     if params is None:
         params = SamplingParams(temperature=0.0)
     if isinstance(params, SamplingParams):
         params = [params] * num_seqs
     if len(params) != num_seqs:
         raise ValueError(f"got {len(params)} sampling params for {num_seqs} prompts")
-    if any(p.stop for p in params):
-        raise ValueError("stop strings are not supported in batched generation")
     first = params[0]
     if any(replace(p, max_tokens=first.max_tokens) != first for p in params[1:]):
         raise ValueError("batched sampling params may differ only in max_tokens")
