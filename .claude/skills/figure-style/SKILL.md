@@ -74,7 +74,7 @@ properties directly and skip the pair.
 ## What a finished figure looks like
 
 ```bash
-uv run python -m benchmarks.report <sweep-folder> --plot docs/figures
+uv run python -m benchmarks.throughput.report <sweep-folder> --plot docs/figures
 ```
 
 Six files for three panels. `--theme light|dark` writes one; `--format svg|both`

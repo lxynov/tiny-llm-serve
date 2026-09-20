@@ -1,7 +1,7 @@
 """Offline throughput benchmark.
 
 Runs a named workload through the engine and writes a JSON record to
-benchmarks/results/, following the protocol in the README: pre-tokenized
+benchmarks/results/throughput/, following the protocol in the README: pre-tokenized
 prompts, ignore_eos so output lengths are exact, and the wall time of one
 full pass over the workload.
 
@@ -10,35 +10,30 @@ with no metrics -- because the batch size that did not fit is the sweep's
 capacity ceiling, which is a finding rather than a lost run.
 
 Usage (from the repo root):
-    python -m benchmarks.bench_throughput --model Qwen/Qwen3-0.6B \
+    python -m benchmarks.throughput.bench --model Qwen/Qwen3-0.6B \
         --workload mixed-out --num-requests 8
 """
 
 import argparse
 import json
-import os
-import platform
 import statistics
-import subprocess
 import sys
 import time
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
 
 from benchmarks import hardware
-from benchmarks.workloads import WORKLOADS, Request, build_workload
-from tiny_llm_serve.config import ModelConfig
+from benchmarks.records import DTYPES, OOM_EXIT, RESULTS_DIR, provenance
+from benchmarks.roofline import decode_bytes_read, kv_bytes_per_token, weight_bytes
+from benchmarks.throughput.workloads import WORKLOADS, Request, build_workload
 from tiny_llm_serve.engine.llm_engine import LLM, Timing
 from tiny_llm_serve.engine.sampling_params import SamplingParams
 from tiny_llm_serve.models import loader
 
-DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
-RESULTS_DIR = Path(__file__).parent / "results"
-# Exit code for a run that recorded its own out-of-memory ceiling; see __main__.
-OOM_EXIT = 2
+# A trial's records land beside the other trials of its sweep, in a folder of
+# this benchmark's own.
+OUTPUT_DIR = RESULTS_DIR / "throughput"
 
 
 def run_sequential(
@@ -92,22 +87,6 @@ def run_static(
     return outputs
 
 
-def weight_bytes(model: torch.nn.Module) -> int:
-    """Bytes of parameters the device holds."""
-    return sum(p.numel() * p.element_size() for p in model.parameters())
-
-
-def kv_bytes_per_token(config: ModelConfig, dtype: torch.dtype) -> int:
-    """Bytes one cached token occupies across every layer."""
-    return (
-        2
-        * config.num_hidden_layers
-        * config.num_key_value_heads
-        * config.head_dim
-        * dtype.itemsize
-    )
-
-
 def decode_groups(
     requests: list[Request], mode: str, batch_size: int
 ) -> list[tuple[int, int, int]]:
@@ -127,26 +106,6 @@ def decode_groups(
     return [(1, len(r.prompt_ids), r.output_len) for r in requests]
 
 
-def decode_bytes_read(
-    groups: list[tuple[int, int, int]], weights: int, kv_per_token: int
-) -> int:
-    """Bytes decode has to move, at minimum, to produce a pass's tokens.
-
-    Every step re-reads all the weights to advance each sequence by one token,
-    so the weight term is charged once per *step* rather than once per
-    sequence. That is the batching win stated in bytes: it is why this total
-    rises far more slowly than the batch size does, and why utilization climbs
-    with it. On top of it each sequence reads its own KV window, which grows by
-    one token every step.
-    """
-    total = 0
-    for batch, kv_len, steps in groups:
-        total += steps * weights
-        window_tokens = steps * kv_len + steps * (steps + 1) // 2
-        total += batch * window_tokens * kv_per_token
-    return total
-
-
 def length_stats(lengths: list[int]) -> dict:
     return {
         "mean": statistics.fmean(lengths),
@@ -163,67 +122,6 @@ def workload_stats(requests: list[Request]) -> dict:
     }
 
 
-def git_state(repo: Path = Path(__file__).parent) -> tuple[str | None, bool | None]:
-    """The commit and whether the tree carried uncommitted changes to it.
-
-    A commit alone does not identify the code that ran: two runs from the
-    same commit with different uncommitted edits are indistinguishable
-    otherwise, which is exactly the claim a record is supposed to settle.
-
-    Untracked files do not count, because this harness writes its records
-    *into* the repository: counting them would mark every run after the first
-    dirty for the file its predecessor left behind, and a flag that fires on
-    every run says nothing about any of them.
-    """
-    git = ["git", "-C", str(repo)]
-    try:
-        commit = subprocess.check_output(git + ["rev-parse", "HEAD"], text=True)
-        status = subprocess.check_output(
-            git + ["status", "--porcelain", "--untracked-files=no"], text=True
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return None, None
-    return commit.strip(), bool(status.strip())
-
-
-def cpu_name() -> str | None:
-    """The chip model, which `platform.processor()` is uselessly vague about
-    ("arm" on macOS, "x86_64" on Linux) while it dominates any CPU run."""
-    try:
-        if platform.system() == "Darwin":
-            return subprocess.check_output(
-                ["sysctl", "-n", "machdep.cpu.brand_string"], text=True
-            ).strip()
-        for line in Path("/proc/cpuinfo").read_text().splitlines():
-            if line.startswith("model name"):
-                return line.split(":", 1)[1].strip()
-    except (OSError, subprocess.CalledProcessError):
-        pass
-    return platform.processor() or None
-
-
-def environment(device: str) -> dict:
-    info = {
-        "platform": platform.platform(),
-        "python": platform.python_version(),
-        "torch": torch.__version__,
-        "cpu": cpu_name(),
-        "cpu_count": os.cpu_count(),
-        # Torch sizes its thread pool from the machine, not from anything this
-        # harness passes it, and CPU throughput scales with it.
-        "torch_threads": torch.get_num_threads(),
-    }
-    if loader.is_cuda(device):
-        properties = torch.cuda.get_device_properties(device)
-        info |= {
-            "gpu": properties.name,
-            "gpu_count": torch.cuda.device_count(),
-            "gpu_memory_bytes": properties.total_memory,
-            "cuda": torch.version.cuda,
-        }
-    return info
-
-
 def run_config(args: argparse.Namespace) -> dict:
     """What the harness was told to do."""
     return {
@@ -236,17 +134,8 @@ def run_config(args: argparse.Namespace) -> dict:
 
 
 def identity(args: argparse.Namespace, device: str) -> dict:
-    commit, dirty = git_state()
-    now = datetime.now(timezone.utc)
-    return {
-        "run_id": f"{now:%Y%m%d-%H%M%S}-{device}-{args.mode}-{args.workload}"
-        f"-{uuid.uuid4().hex[:6]}",
-        "date": now.isoformat(timespec="seconds"),
-        "commit": commit,
-        "dirty": dirty,
-        "model": args.model,
-        "device": device,
-        "environment": environment(device),
+    """The shared provenance block, plus what this benchmark was pointed at."""
+    return provenance(args.model, device, args.mode, args.workload) | {
         "engine_mode": args.mode,
         "load": "offline-drain",
         "workload": args.workload,
@@ -365,7 +254,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--batch-size", type=int, default=8, help="static mode only")
     parser.add_argument("--device", default=None, help="default: auto-select")
     parser.add_argument("--dtype", choices=sorted(DTYPES), default="bfloat16")
-    parser.add_argument("--output-dir", type=Path, default=RESULTS_DIR)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     args = parser.parse_args(argv)
 
     record = bench(args)

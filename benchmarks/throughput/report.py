@@ -19,7 +19,8 @@ would describe a grid that was never run; every column below comes from the
 records themselves.
 
 Usage (from the repo root):
-    python -m benchmarks.report benchmarks/results/qwen3-8b-bfloat16-n512-seed0-cuda
+    python -m benchmarks.throughput.report \
+        benchmarks/results/throughput/qwen3-8b-bfloat16-n512-seed0-cuda
 """
 
 import argparse
@@ -29,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from benchmarks import hardware
-from benchmarks.sweep import MANIFEST, read_manifest
+from benchmarks.throughput.sweep import MANIFEST, read_manifest
 
 # The conditions rule 1 requires two trials to share before their numbers can
 # be plotted against each other. `dtype` and `batch_size` live under `config`,
@@ -338,7 +339,7 @@ def plot(run_dir: Path, out_dir: Path, **kwargs) -> list[Path]:
     thing this file leads to that needs a dependency the engine does not, and a
     report printed to a terminal should not pay for it.
     """
-    from benchmarks import figures
+    from benchmarks.throughput import figures
 
     return figures.plot(run_dir, out_dir, **kwargs)
 

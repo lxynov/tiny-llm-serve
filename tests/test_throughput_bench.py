@@ -4,15 +4,10 @@ import subprocess
 import pytest
 import torch
 
-from benchmarks.bench_throughput import (
-    decode_bytes_read,
-    decode_groups,
-    environment,
-    git_state,
-    main,
-    weight_bytes,
-)
-from benchmarks.workloads import build_workload
+from benchmarks.records import environment, git_state
+from benchmarks.roofline import decode_bytes_read, weight_bytes
+from benchmarks.throughput.bench import decode_groups, main
+from benchmarks.throughput.workloads import build_workload
 
 
 def bench_args(tiny_checkpoint_path, tmp_path, **extra) -> list[str]:
@@ -64,7 +59,7 @@ def test_out_of_memory_is_recorded_rather_than_raised(
     def out_of_memory(*args, **kwargs):
         raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 20.00 GiB")
 
-    monkeypatch.setattr("benchmarks.bench_throughput.LLM", out_of_memory)
+    monkeypatch.setattr("benchmarks.throughput.bench.LLM", out_of_memory)
 
     record = main(
         bench_args(
@@ -96,7 +91,7 @@ def test_only_an_allocation_failure_counts_as_a_ceiling(
     def broken(*args, **kwargs):
         raise RuntimeError("shapes do not match")
 
-    monkeypatch.setattr("benchmarks.bench_throughput.LLM", broken)
+    monkeypatch.setattr("benchmarks.throughput.bench.LLM", broken)
 
     with pytest.raises(RuntimeError, match="shapes do not match"):
         main(bench_args(tiny_checkpoint_path, tmp_path))

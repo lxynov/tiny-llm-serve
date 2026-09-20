@@ -1,6 +1,6 @@
 import pytest
 
-from benchmarks.workloads import WORKLOADS, build_workload
+from benchmarks.throughput.workloads import WORKLOADS, build_workload
 
 VOCAB = 128
 

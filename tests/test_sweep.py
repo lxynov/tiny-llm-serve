@@ -3,8 +3,8 @@ from dataclasses import replace
 
 import pytest
 
-from benchmarks import sweep
-from benchmarks.sweep import (
+from benchmarks.throughput import sweep
+from benchmarks.throughput.sweep import (
     MANIFEST,
     Conditions,
     Trial,
