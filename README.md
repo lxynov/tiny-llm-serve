@@ -70,27 +70,31 @@ runner.
 # Run a seeded workload and write a JSON record to benchmarks/results/throughput/
 uv run python -m benchmarks.throughput.bench --workload mixed-out --num-requests 8
 
-# Same workload under static batching
+# The batch=1 floor every batching win is read against
 uv run python -m benchmarks.throughput.bench --workload mixed-out --num-requests 8 \
-  --mode static --batch-size 8
+  --batch-size 1
 ```
 
-`--mode` selects the engine mode, `--dtype` defaults to `bfloat16` (the
-checkpoints' own precision, and the only one the fused attention kernels
-accept), and `--device` overrides auto-selection.
+`--mode` names the engine path a record came from and takes only `static`
+today. `--batch-size` sets how many sequences decode together, `--dtype`
+defaults to `bfloat16` (the checkpoints' own precision, and the only one the
+fused attention kernels accept), and `--device` overrides auto-selection.
 
-| Mode | Engine path | KV reservation counted |
-|---|---|---|
-| `sequential` | One request at a time, naive growing cache | Exactly what it stores (efficiency 1.0) |
-| `static` | Successive full batches of `--batch-size` (all requests are drained, so cross-mode runs stay comparable) | Per wave: `batch × (longest prompt + longest output)`, each slot's preallocated worst case |
+A run is successive full batches of `--batch-size`, one wave at a time, and
+every request is drained, so runs at different batch sizes stay comparable.
+Each wave reserves `batch × (longest prompt + longest output)` KV tokens —
+every slot's preallocated worst case, which is what `kv_efficiency` weighs
+against what the wave actually stored. At `--batch-size 1` a slot holds exactly
+one sequence, so the ratio is 1.0 and the run is the sequential floor.
 
-In `static` mode `--num-requests` must be a multiple of `--batch-size`. A short
-final wave would otherwise be recorded under the full batch size, so a
-batch-size sweep would compare trials that never ran the batch size they are
-plotted against; requiring whole waves also keeps the workload byte-identical
-across the sweep, which is what rule 1 needs.
+`--num-requests` must be a multiple of `--batch-size`. A short final wave would
+otherwise be recorded under the full batch size, so a batch-size sweep would
+compare trials that never ran the batch size they are plotted against;
+requiring whole waves also keeps the workload byte-identical across the sweep,
+which is what rule 1 needs.
 
-Continuous batching modes land next and reuse the same flags.
+Continuous batching lands next as a second mode, reusing these workloads and
+this record format.
 
 ### Sweeps
 
@@ -100,7 +104,7 @@ drives it:
 
 ```bash
 uv run python -m benchmarks.throughput.sweep --model Qwen/Qwen3-8B --dtype bfloat16 \
-  --num-requests 128 --batch-sizes 1,2,4,8,16,32,64,128 --sequential
+  --num-requests 128 --batch-sizes 1,2,4,8,16,32,64,128
 ```
 
 Each trial — one workload at one batch size — runs in **its own process**,
@@ -110,8 +114,8 @@ the sweep ends. A trial that dies does not stop the sweep: running out of
 memory at a large batch size is *where capacity ran out*, which is a result,
 and aborting there would discard every trial still queued behind it.
 
-Batch sizes run ascending behind the optional sequential baseline, so a sweep
-that dies at its memory ceiling has already banked the rest of the curve.
+Batch sizes run ascending, so a sweep that dies at its memory ceiling has
+already banked the rest of the curve.
 
 A trial that runs out of memory writes a record of its own — `"status": "oom"`,
 no metrics — and the sweep then stops raising the batch size for that workload
@@ -127,7 +131,6 @@ for when the sweep started, the code it measures, and what it held fixed:
 
 ```
 benchmarks/results/throughput/20260816-faa6722-cuda-h100-80gb-hbm3-qwen3-8b-bfloat16-n128/
-├── sequential-mixed-out.json    # the baseline has no batch size
 ├── static-mixed-out-bs001.json
 ├── static-mixed-out-bs002.json
 ├── ...
@@ -192,7 +195,7 @@ names — this one keeps the two apart.
 | `peak_gpu_memory_allocated_bytes` | `torch.cuda.max_memory_allocated()` over the timed pass (null off-GPU): bytes held by live tensors |
 | `peak_gpu_memory_reserved_bytes` | `torch.cuda.max_memory_reserved()` over the same pass: bytes the caching allocator holds from the driver, including freed-but-cached blocks and fragmentation. Always ≥ allocated, and the one OOM is decided by — so it is the number that predicts a sweep's capacity ceiling, and it is what `nvidia-smi` shows minus the CUDA context |
 | `peak_concurrent_seqs` | Most sequences in flight at once |
-| `kv_efficiency` | KV tokens actually used ÷ KV tokens reserved. Sequential mode's naive cache reserves exactly what it uses (1.0); preallocated batching reserves whole slots up front, and this ratio is the number that indicts it |
+| `kv_efficiency` | KV tokens actually used ÷ KV tokens reserved. At `batch=1` a slot holds exactly one sequence's prompt plus budget (1.0); a wider batch reserves every slot for the longest row, and this ratio is the number that indicts it |
 
 ### Reports
 
@@ -302,7 +305,7 @@ grid that was never run.
    files would mark every run after the first for the record its predecessor
    left behind, and a flag that fires on every run says nothing about any of
    them. Filenames lead with the UTC
-   timestamp and device (`20260731-192455-mps-sequential-mixed-out-da20ae`);
+   timestamp and device (`20260731-192455-mps-static-mixed-out-da20ae`);
    keep separate machines in separate `--output-dir`s.
 
 ## Development

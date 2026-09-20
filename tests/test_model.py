@@ -3,7 +3,7 @@ from backends import backends
 from tinymodel import tiny_config, tiny_hf_config
 from transformers import Qwen3ForCausalLM as HFQwen3ForCausalLM
 
-from tiny_llm_serve.kv import NaiveKVCache
+from tiny_llm_serve.kv import PreallocatedKVManager
 from tiny_llm_serve.models.qwen3 import Qwen3ForCausalLM
 
 
@@ -85,24 +85,38 @@ def test_logits_indices_select_the_same_rows_as_a_full_forward(device):
 
 @backends("all")
 def test_incremental_decode_matches_full_forward(device):
+    """Prefilling a prompt and then stepping over the cache reproduces the
+    logits of one forward pass over the whole sequence."""
     torch.manual_seed(0)
     config = tiny_config()
     model = Qwen3ForCausalLM(config).eval().to(device)
-    input_ids = torch.randint(0, config.vocab_size, (6,), device=device)
+    input_ids = torch.randint(0, config.vocab_size, (1, 6), device=device)
+    positions = torch.arange(6, device=device).unsqueeze(0)
 
     with torch.no_grad():
-        full_logits = model(input_ids, torch.arange(6, device=device))
+        full_logits = model(input_ids, positions)
 
-        kv_cache = NaiveKVCache(config.num_hidden_layers)
-        prefill_logits = model(input_ids[:3], torch.arange(3, device=device), kv_cache)
-        step_logits = [prefill_logits[-1]]
+        manager = PreallocatedKVManager(
+            config,
+            num_slots=1,
+            max_model_len=6,
+            device=device,
+            dtype=next(model.parameters()).dtype,
+        )
+        slot = manager.admit(3)
+        prefill_logits = model(
+            input_ids[:, :3], positions[:, :3], manager.begin_prefill([slot], [3])
+        )
+        step_logits = [prefill_logits[0, -1]]
         for pos in range(3, 6):
             logits = model(
-                input_ids[pos : pos + 1], torch.tensor([pos], device=device), kv_cache
+                input_ids[:, pos : pos + 1],
+                positions[:, pos : pos + 1],
+                manager.begin_decode([slot]),
             )
-            step_logits.append(logits[0])
+            step_logits.append(logits[0, 0])
 
-    assert kv_cache.seq_len == 6
+    assert int(manager.cached_seq_lens[slot]) == 6
     torch.testing.assert_close(
-        torch.stack(step_logits), full_logits[2:], atol=1e-4, rtol=1e-4
+        torch.stack(step_logits), full_logits[0, 2:], atol=1e-4, rtol=1e-4
     )

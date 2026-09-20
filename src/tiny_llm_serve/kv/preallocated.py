@@ -5,8 +5,7 @@ bookkeeping (control plane). Admission is the only memory decision: an
 admitted sequence reserves everything it could ever need up front, so it can
 never outgrow its reservation mid-flight. Models never touch the manager
 directly -- each engine step starts with begin_prefill/begin_decode, which
-returns a view speaking the same KVCacheView protocol as the naive
-per-request cache.
+returns a view speaking the KVCacheView protocol.
 """
 
 import torch

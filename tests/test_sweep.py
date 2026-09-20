@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from benchmarks.records import cpu_name, git_state
-from benchmarks.throughput import sweep
+from benchmarks.throughput import bench, sweep
 from benchmarks.throughput.sweep import (
     MANIFEST,
     Trial,
@@ -109,7 +109,7 @@ def test_a_batch_size_that_does_not_fit_ends_its_own_ladder(
         sizes = [t.batch_size for t in attempted if t.workload == workload]
         assert sizes == [1, 2, 4]  # 8 was never attempted
     output = capsys.readouterr().out
-    assert "OUT OF MEMORY: mixed-out static bs=4" in output
+    assert "OUT OF MEMORY: mixed-out bs=4" in output
     assert "4 run, 2 out of memory, 2 not attempted, 0 failed" in output
 
 
@@ -146,20 +146,27 @@ def test_grid_that_cannot_divide_into_waves_is_rejected(tiny_checkpoint_path, tm
     assert not list(tmp_path.iterdir())  # not even the folder
 
 
-def test_plan_runs_small_batches_first_behind_the_baseline():
+def test_plan_runs_small_batches_first():
     """A sweep that dies at its ceiling should have banked the rest already."""
 
     class Args:
         workloads = ["mixed-out"]
         batch_sizes = [8, 1, 4]
-        sequential = True
 
     assert plan(Args()) == [
-        Trial("mixed-out", "sequential", None),
-        Trial("mixed-out", "static", 1),
-        Trial("mixed-out", "static", 4),
-        Trial("mixed-out", "static", 8),
+        Trial("mixed-out", 1),
+        Trial("mixed-out", 4),
+        Trial("mixed-out", 8),
     ]
+
+
+def test_a_second_engine_mode_has_to_reach_the_sweep_key():
+    """`Trial` keys on (workload, batch size) alone, which is only safe while
+    one engine mode exists: the sweep names each record after the default mode
+    and never passes `--mode`, so a second one would be run under the first's
+    name. If this fails, a mode was added -- put it in `Trial`, in
+    `trial_entry`, and on the `--mode` the sweep passes to each trial."""
+    assert bench.MODES == ["static"]
 
 
 def test_sweep_id_leads_with_the_day_and_the_code():

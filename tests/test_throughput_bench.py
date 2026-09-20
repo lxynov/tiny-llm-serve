@@ -15,6 +15,9 @@ def bench_args(tiny_checkpoint_path, tmp_path, **extra) -> list[str]:
         "--model": str(tiny_checkpoint_path),
         "--workload": "uniform-512x128",
         "--num-requests": "2",
+        # The batch=1 floor: whole waves whatever a test asks for, and the
+        # measurement every batching win is read against.
+        "--batch-size": "1",
         "--device": "cpu",
         "--output-dir": str(tmp_path),
         **extra,
@@ -27,8 +30,8 @@ def test_harness_writes_a_complete_record(tiny_checkpoint_path, tmp_path):
 
     (path,) = tmp_path.glob("*.json")
     assert json.loads(path.read_text()) == record
-    assert path.stem == record["run_id"] == "sequential-uniform-512x128"
-    assert record["engine_mode"] == "sequential"
+    assert path.stem == record["run_id"] == "static-uniform-512x128-bs001"
+    assert record["engine_mode"] == "static"
     assert record["workload"] == "uniform-512x128"
     assert record["commit"] is not None
     environment = record["environment"]
@@ -40,7 +43,7 @@ def test_harness_writes_a_complete_record(tiny_checkpoint_path, tmp_path):
     assert metrics["output_tokens"] == 2 * 128
     assert metrics["wall_time_s"] > 0
     assert metrics["output_tok_s"] > 0
-    # The naive sequential cache reserves exactly what it stores.
+    # One slot per wave reserves exactly that request's prompt plus budget.
     assert metrics["kv_efficiency"] == 1.0
     assert metrics["peak_concurrent_seqs"] == 1
     # Both memory peaks are recorded, and both are null off-GPU.
@@ -55,8 +58,6 @@ def test_trial_names_sort_into_the_batch_size_ladder():
 
     assert names[0] == "static-mixed-out-bs001"
     assert names == sorted(names)  # unpadded, bs256 would sort before bs64
-    # The baseline has no batch size to name.
-    assert trial_name("sequential", "mixed-out", None) == "sequential-mixed-out"
 
 
 def test_out_of_memory_is_recorded_rather_than_raised(
@@ -75,7 +76,7 @@ def test_out_of_memory_is_recorded_rather_than_raised(
         bench_args(
             tiny_checkpoint_path,
             tmp_path,
-            **{"--mode": "static", "--batch-size": "2", "--num-requests": "2"},
+            **{"--batch-size": "2", "--num-requests": "2"},
         )
     )
 
@@ -160,7 +161,7 @@ def test_environment_describes_the_selected_gpu(monkeypatch):
     assert info["gpu_memory_bytes"] == 80 * 1024**3
 
 
-def test_static_mode_drains_the_workload_in_waves(tiny_checkpoint_path, tmp_path):
+def test_a_wider_batch_drains_the_workload_in_waves(tiny_checkpoint_path, tmp_path):
     record = main(
         bench_args(
             tiny_checkpoint_path,
@@ -168,7 +169,6 @@ def test_static_mode_drains_the_workload_in_waves(tiny_checkpoint_path, tmp_path
             **{
                 "--workload": "mixed-out",
                 "--num-requests": "4",
-                "--mode": "static",
                 "--batch-size": "2",
             },
         )
@@ -195,7 +195,6 @@ def test_phases_are_timed_separately_and_account_for_the_pass(
             tmp_path,
             **{
                 "--num-requests": "2",
-                "--mode": "static",
                 "--batch-size": "2",
             },
         )
@@ -213,8 +212,8 @@ def test_phases_are_timed_separately_and_account_for_the_pass(
     assert phases == pytest.approx(metrics["wall_time_s"], rel=0.05)
 
 
-def test_sequential_mode_times_every_request(tiny_checkpoint_path, tmp_path):
-    """Timing accumulates across calls, so one pass sums all of its requests."""
+def test_timing_accumulates_over_every_wave(tiny_checkpoint_path, tmp_path):
+    """Timing accumulates across calls, so one pass sums all of its waves."""
     record = main(
         bench_args(
             tiny_checkpoint_path,
@@ -224,8 +223,9 @@ def test_sequential_mode_times_every_request(tiny_checkpoint_path, tmp_path):
     )
 
     metrics = record["metrics"]
-    # Two requests, each running its 128 decode passes back to back.
-    assert metrics["decode_steps"] == 2 * 128
+    # Two waves of one back to back, each spending 127 decode passes on its
+    # 128 output tokens: the first of them falls out of the prefill logits.
+    assert metrics["decode_steps"] == 2 * 127
     phases = metrics["prefill_time_s"] + metrics["decode_time_s"]
     assert phases == pytest.approx(metrics["wall_time_s"], rel=0.05)
 
@@ -237,7 +237,6 @@ def test_byte_accounting_matches_the_closed_form(tiny_checkpoint_path, tmp_path)
             tmp_path,
             **{
                 "--num-requests": "2",
-                "--mode": "static",
                 "--batch-size": "2",
             },
         )
@@ -252,9 +251,9 @@ def test_byte_accounting_matches_the_closed_form(tiny_checkpoint_path, tmp_path)
     assert metrics["weight_bytes"] > 0
 
 
-@pytest.mark.parametrize("mode, batch_size", [("static", "2"), ("sequential", "8")])
+@pytest.mark.parametrize("batch_size", ["1", "2"])
 def test_decode_step_model_matches_what_the_engine_ran(
-    tiny_checkpoint_path, tmp_path, mode, batch_size
+    tiny_checkpoint_path, tmp_path, batch_size
 ):
     """The roofline counts bytes from a model of the decode loop; if that model
     disagreed with the loop, MBU would be wrong in a way nothing else shows."""
@@ -265,14 +264,13 @@ def test_decode_step_model_matches_what_the_engine_ran(
             **{
                 "--workload": "mixed-out",
                 "--num-requests": "4",
-                "--mode": mode,
                 "--batch-size": batch_size,
             },
         )
     )
 
     requests = build_workload("mixed-out", 4, 128, seed=0)
-    groups = decode_groups(requests, mode, int(batch_size))
+    groups = decode_groups(requests, int(batch_size))
     assert sum(steps for _, _, steps in groups) == record["metrics"]["decode_steps"]
 
 
@@ -328,28 +326,22 @@ def test_weight_bytes_counts_tied_storage_once():
     assert weight_bytes(torch.nn.Sequential(shared, tied)) == 4 * 4 * 4
 
 
+def test_the_only_engine_mode_is_static(tiny_checkpoint_path, tmp_path):
+    """The flag outlived the sequential mode: it still names the engine path a
+    record came from, and rejects one this benchmark cannot drive."""
+    with pytest.raises(SystemExit):
+        main(bench_args(tiny_checkpoint_path, tmp_path, **{"--mode": "sequential"}))
+    assert not list(tmp_path.glob("*.json"))
+
+
 def test_ragged_final_wave_is_rejected(tiny_checkpoint_path, tmp_path):
     """A short final wave would be recorded under the full batch size."""
     args = bench_args(
         tiny_checkpoint_path,
         tmp_path,
-        **{"--num-requests": "3", "--mode": "static", "--batch-size": "2"},
+        **{"--num-requests": "3", "--batch-size": "2"},
     )
 
     with pytest.raises(ValueError, match="not a multiple of --batch-size"):
         main(args)
     assert not list(tmp_path.glob("*.json"))
-
-
-def test_sequential_mode_ignores_the_batch_size(tiny_checkpoint_path, tmp_path):
-    """Divisibility constrains waves, and sequential mode has none."""
-    record = main(
-        bench_args(
-            tiny_checkpoint_path,
-            tmp_path,
-            **{"--num-requests": "3", "--batch-size": "2"},
-        )
-    )
-
-    assert record["config"]["batch_size"] is None
-    assert record["config"]["num_waves"] is None

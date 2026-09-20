@@ -35,18 +35,7 @@ from tiny_llm_serve.models import loader
 # this benchmark's own.
 OUTPUT_DIR = RESULTS_DIR / "throughput"
 
-
-def run_sequential(
-    llm: LLM, requests: list[Request], timing: Timing | None = None
-) -> list[list[int]]:
-    """The batch=1 floor: one request at a time over the naive KV cache."""
-    outputs = []
-    for request in requests:
-        params = SamplingParams(
-            temperature=0.0, max_tokens=request.output_len, ignore_eos=True
-        )
-        outputs.append(llm.generate_ids(request.prompt_ids, params, timing=timing))
-    return outputs
+MODES = ["static"]
 
 
 def waves(requests: list[Request], batch_size: int) -> list[list[Request]]:
@@ -87,23 +76,19 @@ def run_static(
     return outputs
 
 
-def decode_groups(
-    requests: list[Request], mode: str, batch_size: int
-) -> list[tuple[int, int, int]]:
+def decode_groups(requests: list[Request], size: int) -> list[tuple[int, int, int]]:
     """Per set of sequences decoded together: (sequences, the KV length they
     start from, decode steps).
     """
-    if mode == "static":
-        return [
-            (
-                len(wave),
-                max(len(r.prompt_ids) for r in wave),
-                # The wave's first token falls out of the prefill logits.
-                max(r.output_len for r in wave) - 1,
-            )
-            for wave in waves(requests, batch_size)
-        ]
-    return [(1, len(r.prompt_ids), r.output_len) for r in requests]
+    return [
+        (
+            len(wave),
+            max(len(r.prompt_ids) for r in wave),
+            # The wave's first token falls out of the prefill logits.
+            max(r.output_len for r in wave) - 1,
+        )
+        for wave in waves(requests, size)
+    ]
 
 
 def length_stats(lengths: list[int]) -> dict:
@@ -126,23 +111,19 @@ def run_config(args: argparse.Namespace) -> dict:
     """What the harness was told to do."""
     return {
         "dtype": args.dtype,
-        "batch_size": args.batch_size if args.mode == "static" else None,
-        "num_waves": (
-            args.num_requests // args.batch_size if args.mode == "static" else None
-        ),
+        "batch_size": args.batch_size,
+        "num_waves": args.num_requests // args.batch_size,
     }
 
 
-def trial_name(mode: str, workload: str, batch_size: int | None) -> str:
+def trial_name(mode: str, workload: str, batch_size: int) -> str:
     """A trial's file name, unique within its sweep's folder.
 
     The folder's name carries everything else -- date, commit, chip, model,
     dtype and request count. The batch size is zero-padded so a listing sorts
-    into the ladder the sweep climbed, and left out in sequential mode, which
-    has none.
+    into the ladder the sweep climbed.
     """
-    name = f"{mode}-{workload}"
-    return name if batch_size is None else f"{name}-bs{batch_size:03d}"
+    return f"{mode}-{workload}-bs{batch_size:03d}"
 
 
 def identity(args: argparse.Namespace, device: str) -> dict:
@@ -161,8 +142,7 @@ def identity(args: argparse.Namespace, device: str) -> dict:
 
 def bench(args: argparse.Namespace) -> dict:
     """One trial's record: what it measured, or the ceiling it found."""
-    if args.mode == "static":
-        check_whole_waves(args.num_requests, args.batch_size)
+    check_whole_waves(args.num_requests, args.batch_size)
     device = loader.resolve_device(args.device)
     try:
         return measure(args, device)
@@ -182,42 +162,33 @@ def measure(args: argparse.Namespace, device: str) -> dict:
         args.workload, args.num_requests, llm.model.config.vocab_size, args.seed
     )
 
-    def runner(timing: Timing | None = None) -> list[list[int]]:
-        if args.mode == "static":
-            return run_static(llm, requests, args.batch_size, timing)
-        return run_sequential(llm, requests, timing)
-
     if on_gpu:
         # Per device: the stats these clear and the ones read below both belong
         # to whichever GPU they are pointed at, not to whichever is current.
         torch.cuda.reset_peak_memory_stats(device)
     # One Timing for the pass: the generate calls accumulate into it, so it
-    # ends up holding the pass's totals over every request or wave.
+    # ends up holding the pass's totals over every wave.
     timing = Timing()
     loader.synchronize(device)
     start = time.perf_counter()
-    outputs = runner(timing)
+    outputs = run_static(llm, requests, args.batch_size, timing)
     loader.synchronize(device)
     wall = time.perf_counter() - start
 
     prompt_tokens = sum(len(r.prompt_ids) for r in requests)
     output_tokens = sum(len(o) for o in outputs)
     used_kv_tokens = prompt_tokens + output_tokens
-    if args.mode == "static":
-        reserved_kv_tokens = sum(
-            len(w) * wave_model_len(w) for w in waves(requests, args.batch_size)
-        )
-        peak_concurrent_seqs = max(len(w) for w in waves(requests, args.batch_size))
-    else:
-        # The naive sequential cache grows exactly with what it stores.
-        reserved_kv_tokens = used_kv_tokens
-        peak_concurrent_seqs = 1
+    # A wave reserves its longest prompt plus its largest budget in every slot,
+    # so at bs=1 -- where each wave is its own sequence -- reserved equals used.
+    pass_waves = waves(requests, args.batch_size)
+    reserved_kv_tokens = sum(len(w) * wave_model_len(w) for w in pass_waves)
+    peak_concurrent_seqs = max(len(w) for w in pass_waves)
     weights = weight_bytes(llm.model)
     kv_per_token = kv_bytes_per_token(
         llm.model.config, next(llm.model.parameters()).dtype
     )
     decode_bytes = decode_bytes_read(
-        decode_groups(requests, args.mode, args.batch_size), weights, kv_per_token
+        decode_groups(requests, args.batch_size), weights, kv_per_token
     )
     record = identity(args, device)
     peak_bytes_s = hardware.peak_hbm_bytes_s(record["environment"].get("gpu"))
@@ -262,10 +233,10 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--workload", choices=sorted(WORKLOADS), required=True)
     parser.add_argument("--num-requests", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--mode", choices=MODES, default=MODES[-1])
     parser.add_argument(
-        "--mode", choices=["sequential", "static"], default="sequential"
+        "--batch-size", type=int, default=8, help="sequences decoded together"
     )
-    parser.add_argument("--batch-size", type=int, default=8, help="static mode only")
     parser.add_argument("--device", default=None, help="default: auto-select")
     parser.add_argument("--dtype", choices=sorted(DTYPES), default="bfloat16")
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)

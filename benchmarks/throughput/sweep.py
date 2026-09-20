@@ -38,7 +38,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from benchmarks.records import DTYPES, OOM_EXIT, cpu_name, git_state
-from benchmarks.throughput.bench import OUTPUT_DIR, check_whole_waves, trial_name
+from benchmarks.throughput.bench import (
+    MODES,
+    OUTPUT_DIR,
+    check_whole_waves,
+    trial_name,
+)
 from benchmarks.throughput.workloads import WORKLOADS
 from tiny_llm_serve.models import loader
 
@@ -49,8 +54,7 @@ MANIFEST = "sweep.json"
 @dataclass(frozen=True)
 class Trial:
     workload: str
-    mode: str
-    batch_size: int | None
+    batch_size: int
 
 
 def slug(text: str) -> str:
@@ -142,7 +146,6 @@ def trial_entry(
     """One line of the index: a trial, how it ended, and where it landed."""
     return {
         "workload": trial.workload,
-        "mode": trial.mode,
         "batch_size": trial.batch_size,
         "status": status,
         "seconds": seconds,
@@ -194,7 +197,6 @@ def manifest(
         "grid": {
             "workloads": args.workloads,
             "batch_sizes": sorted(args.batch_sizes),
-            "sequential": args.sequential,
         },
         "ceiling": dict(sorted(ceiling.items())),
         "trials": entries,
@@ -213,17 +215,15 @@ def write_manifest(run_dir: Path, index: dict) -> None:
 
 def plan(args: argparse.Namespace) -> list[Trial]:
     """The grid, workload by workload, batch sizes ascending."""
-    trials = []
-    for workload in args.workloads:
-        if args.sequential:
-            trials.append(Trial(workload, "sequential", None))
-        trials += [Trial(workload, "static", size) for size in sorted(args.batch_sizes)]
-    return trials
+    return [
+        Trial(workload, size)
+        for workload in args.workloads
+        for size in sorted(args.batch_sizes)
+    ]
 
 
 def label(trial: Trial) -> str:
-    name = f"{trial.workload} {trial.mode}"
-    return name if trial.batch_size is None else f"{name} bs={trial.batch_size}"
+    return f"{trial.workload} bs={trial.batch_size}"
 
 
 def exit_code(ran: int, failed: int) -> int:
@@ -234,8 +234,6 @@ def exit_code(ran: int, failed: int) -> int:
 
 def note_ceiling(ceiling: dict[str, int], trial: Trial) -> None:
     """Remember the smallest batch size that did not fit on this workload."""
-    if trial.batch_size is None:
-        return  # the sequential baseline is not on the batch-size ladder
     limit = ceiling.get(trial.workload, trial.batch_size)
     ceiling[trial.workload] = min(limit, trial.batch_size)
 
@@ -251,9 +249,7 @@ def over_ceiling(ceiling: dict[str, int], trial: Trial) -> bool:
     workload's.
     """
     limit = ceiling.get(trial.workload)
-    return (
-        limit is not None and trial.batch_size is not None and trial.batch_size >= limit
-    )
+    return limit is not None and trial.batch_size >= limit
 
 
 def run(args: argparse.Namespace, trial: Trial, run_dir: Path) -> str:
@@ -266,8 +262,8 @@ def run(args: argparse.Namespace, trial: Trial, run_dir: Path) -> str:
         args.model,
         "--workload",
         trial.workload,
-        "--mode",
-        trial.mode,
+        "--batch-size",
+        str(trial.batch_size),
         "--num-requests",
         str(args.num_requests),
         "--dtype",
@@ -277,8 +273,6 @@ def run(args: argparse.Namespace, trial: Trial, run_dir: Path) -> str:
         "--output-dir",
         str(run_dir),
     ]
-    if trial.batch_size is not None:
-        command += ["--batch-size", str(trial.batch_size)]
     if args.device is not None:
         command += ["--device", args.device]
     code = subprocess.run(command).returncode
@@ -303,11 +297,6 @@ def main(argv: list[str] | None = None) -> int:
         "--batch-sizes",
         type=lambda s: [int(part) for part in s.split(",")],
         default=[1, 2, 4, 8, 16, 32, 64, 128],
-    )
-    parser.add_argument(
-        "--sequential",
-        action="store_true",
-        help="also run the sequential baseline for each workload",
     )
     parser.add_argument("--num-requests", type=int, default=128)
     parser.add_argument("--seed", type=int, default=0)
@@ -376,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
             seconds = time.perf_counter() - start
             # Whatever the trial wrote, including the record an out-of-memory
             # one leaves behind; a trial that died before writing has none.
-            name = f"{trial_name(trial.mode, trial.workload, trial.batch_size)}.json"
+            name = f"{trial_name(MODES[-1], trial.workload, trial.batch_size)}.json"
             written = name if (run_dir / name).exists() else None
             entries.append(trial_entry(trial, outcome, seconds, written))
             if outcome == "oom":

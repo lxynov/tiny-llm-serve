@@ -35,7 +35,7 @@ from benchmarks.throughput.sweep import MANIFEST, read_manifest
 # The conditions rule 1 requires two trials to share before their numbers can
 # be plotted against each other. `dtype` and `batch_size` live under `config`,
 # so they are checked separately.
-FIXED = ("model", "device", "num_requests", "seed", "commit")
+FIXED = ("model", "device", "num_requests", "seed", "commit", "engine_mode")
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,6 @@ class Row:
     """One trial, with the columns no record carries computed in."""
 
     workload: str
-    mode: str
     batch_size: int | None
     status: str
     wall_s: float | None = None
@@ -109,7 +108,6 @@ def build_row(entry: dict, record: dict | None) -> Row:
     """One index entry, filled in from the record it points at."""
     base = dict(
         workload=entry["workload"],
-        mode=entry["mode"],
         batch_size=entry["batch_size"],
         status=entry["status"],
     )
@@ -167,7 +165,6 @@ def build_rows(index: dict, records: dict[str, dict]) -> list[Row]:
         entries = [
             {
                 "workload": r["workload"],
-                "mode": r["engine_mode"],
                 "batch_size": r["config"].get("batch_size"),
                 "status": r.get("status", "ok"),
                 "record": name,
