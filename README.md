@@ -55,8 +55,9 @@ uv run python -m benchmarks.bench_throughput --workload mixed-out --num-requests
   --mode static --batch-size 8
 ```
 
-`--mode` selects the engine mode, `--dtype bfloat16` suits GPU runs, and
-`--device` overrides auto-selection.
+`--mode` selects the engine mode, `--dtype` defaults to `bfloat16` (the
+checkpoints' own precision, and the only one the fused attention kernels
+accept), and `--device` overrides auto-selection.
 
 | Mode | Engine path | KV reservation counted |
 |---|---|---|

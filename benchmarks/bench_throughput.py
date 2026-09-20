@@ -364,7 +364,7 @@ def main(argv: list[str] | None = None) -> dict:
     )
     parser.add_argument("--batch-size", type=int, default=8, help="static mode only")
     parser.add_argument("--device", default=None, help="default: auto-select")
-    parser.add_argument("--dtype", choices=sorted(DTYPES), default="float32")
+    parser.add_argument("--dtype", choices=sorted(DTYPES), default="bfloat16")
     parser.add_argument("--output-dir", type=Path, default=RESULTS_DIR)
     args = parser.parse_args(argv)
 

@@ -29,7 +29,7 @@ def sweep_args(tiny_checkpoint_path, tmp_path, **extra) -> list[str]:
     return [part for pair in args.items() for part in pair]
 
 
-def run_dir(tiny_checkpoint_path, tmp_path, num_requests=2, seed=0, dtype="float32"):
+def run_dir(tiny_checkpoint_path, tmp_path, num_requests=2, seed=0, dtype="bfloat16"):
     """Where `sweep_args` puts the records it gathers."""
     conditions = Conditions(str(tiny_checkpoint_path), dtype, num_requests, seed)
     return tmp_path / sweep_id(conditions, "cpu")
@@ -133,7 +133,7 @@ def test_a_recorded_ceiling_is_not_climbed_again_on_a_restart(monkeypatch, tmp_p
                 "workload": "mixed-out",
                 "engine_mode": "static",
                 "status": "oom",
-                "config": {"dtype": "float32", "batch_size": 2},
+                "config": {"dtype": "bfloat16", "batch_size": 2},
             }
         )
     )

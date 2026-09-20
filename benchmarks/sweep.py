@@ -325,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--num-requests", type=int, default=128)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default=None, help="default: auto-select")
-    parser.add_argument("--dtype", choices=sorted(DTYPES), default="float32")
+    parser.add_argument("--dtype", choices=sorted(DTYPES), default="bfloat16")
     parser.add_argument(
         "--output-dir", type=Path, default=RESULTS_DIR, help="parent of the run folder"
     )
