@@ -12,8 +12,9 @@ from tiny_llm_serve.kv import NaiveKVCache, PreallocatedKVManager
 from tiny_llm_serve.layers.sampler import Sampler
 from tiny_llm_serve.models import loader
 
-# See docs/raising-decode-mbu.md item 1: settle which SDPA backend decode
-# actually dispatches to before working on anything downstream of it.
+# Answered docs/before-continuous-batching.md §1.2: decode dispatches to the
+# math fallback, not FlashAttention. Kept as the check that each step of that
+# plan actually moved the backend it claims to.
 _DEBUG_PROFILE_DECODE = bool(os.environ.get("TINY_LLM_SERVE_DEBUG_PROFILE_DECODE"))
 _profiled_decode_step = False
 
