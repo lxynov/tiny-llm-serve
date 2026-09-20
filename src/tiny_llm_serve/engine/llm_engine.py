@@ -1,6 +1,7 @@
 import argparse
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import torch
@@ -16,6 +17,63 @@ class Timing:
     prefill_s: float = 0.0
     decode_s: float = 0.0
     decode_steps: int = 0
+
+
+@dataclass
+class DecodeState:
+    """One static batch mid-flight: everything a decode step reads and advances.
+
+    `step_logits` is a step's *input*, not its output: the prefill leaves the
+    logits the first sampled token comes from, and each step leaves the ones
+    the next step samples.
+
+    Shapes:
+        step_logits: [batch, vocab_size]
+        seen_ids:    [batch, num_seen] int64 -- prompt and generated ids, each
+                     row padded to the longest with its own first token
+        lens:        [batch] int64 -- tokens cached per row, i.e. the position
+                     this row's next token lands on
+        finished:    [batch] bool
+    """
+
+    manager: PreallocatedKVManager
+    slots: list[int]
+    params: SamplingParams
+    max_tokens: list[int]
+    eos: int | None
+    detokenize: Callable[[list[int]], str]
+    generator: torch.Generator | None
+    step_logits: torch.Tensor
+    seen_ids: torch.Tensor
+    lens: torch.Tensor
+    finished: torch.Tensor
+    outputs: list[list[int]]
+    steps: int = 0
+    done: bool = False
+
+    def record(self, next_ids: torch.Tensor) -> None:
+        """Record next_ids
+        Shapes:
+            next_ids: [batch] int64
+        """
+        stop = self.params.stop
+        for i, next_id in enumerate(next_ids.tolist()):
+            if self.finished[i]:
+                continue
+            if not self.params.ignore_eos and next_id == self.eos:
+                self.finished[i] = True
+                continue
+            self.outputs[i].append(next_id)
+            if len(self.outputs[i]) == self.max_tokens[i]:
+                self.finished[i] = True
+            elif stop:
+                # TODO: O(n^2) -- re-decodes and re-scans a row's whole
+                # output each step. Replace with a streaming detokenizer
+                # (incremental decode + tail scan) when we add token
+                # streaming.
+                text = self.detokenize(self.outputs[i])
+                self.finished[i] = any(s in text for s in stop)
+        self.done = bool(self.finished.all())
 
 
 class LLM:
@@ -42,14 +100,12 @@ class LLM:
         return self.generate_batch([prompt], params)[0]
 
     @torch.inference_mode()
-    def generate_batch_ids(
+    def prefill_batch(
         self,
         prompts: list[list[int]],
         params: SamplingParams | list[SamplingParams] | None = None,
         max_model_len: int | None = None,
-        timing: Timing | None = None,
-    ) -> list[list[int]]:
-        """Decode a static batch: one padded prefill, then lockstep decode."""
+    ) -> DecodeState:
         params_list = _batch_params(params, len(prompts))
         sampling_params = params_list[0]  # rows differ only in max_tokens
         generator = None
@@ -65,7 +121,6 @@ class LLM:
             # batch drains, so every slot must fit the longest prompt plus the
             # largest budget, not just its own sequence.
             max_model_len = max(prompt_lens) + max(p.max_tokens for p in params_list)
-        start = prefill_end = self._now() if timing is not None else 0.0
         manager = PreallocatedKVManager(
             self.model.config,
             num_slots=len(prompts),
@@ -85,9 +140,6 @@ class LLM:
         step_logits = self.model(
             input_ids, positions, manager.begin_prefill(slots, prompt_lens), lens - 1
         )
-        if timing is not None:
-            prefill_end = self._now()
-            timing.prefill_s += prefill_end - start
 
         # Track seen ids for the repetition penalty, padding each row with its
         # own first token: duplicate ids are harmless to the penalty (the same
@@ -97,44 +149,67 @@ class LLM:
         for i, n in enumerate(prompt_lens):
             seen_ids[i, n:] = seen_ids[i, 0]
 
-        eos = self.tokenizer.eos_token_id
-        stop = sampling_params.stop
-        outputs: list[list[int]] = [[] for _ in prompts]
-        finished = torch.zeros(num_seqs, dtype=torch.bool, device=self.device)
-        while True:
-            next_ids = self.sampler(step_logits, sampling_params, seen_ids, generator)
-            for i, next_id in enumerate(next_ids.tolist()):
-                if finished[i]:
-                    continue
-                if not sampling_params.ignore_eos and next_id == eos:
-                    finished[i] = True
-                    continue
-                outputs[i].append(next_id)
-                if len(outputs[i]) == params_list[i].max_tokens:
-                    finished[i] = True
-                elif stop:
-                    # TODO: O(n^2) -- re-decodes and re-scans a row's whole
-                    # output each step. Replace with a streaming detokenizer
-                    # (incremental decode + tail scan) when we add token
-                    # streaming.
-                    text = self.tokenizer.decode(outputs[i])
-                    finished[i] = any(s in text for s in stop)
-            if bool(finished.all()):
-                break
-            # Finished rows idle: feed their (already seen) first token so the
-            # step stays well-formed for any vocab, and discard their output.
-            feed = torch.where(finished, seen_ids[:, 0], next_ids)
-            seen_ids = torch.cat((seen_ids, feed.unsqueeze(1)), dim=1)
-            logits = self.model(
-                feed.unsqueeze(1), lens.unsqueeze(1), manager.begin_decode(slots)
-            )
-            step_logits = logits[:, 0]
-            lens = lens + 1
-            if timing is not None:
-                timing.decode_steps += 1
+        return DecodeState(
+            manager=manager,
+            slots=slots,
+            params=sampling_params,
+            max_tokens=[p.max_tokens for p in params_list],
+            eos=self.tokenizer.eos_token_id,
+            # decoding a flat id list yields a single str; the stub widens it to str | list[str]
+            detokenize=self.tokenizer.decode,  # pyrefly: ignore[bad-argument-type]
+            generator=generator,
+            step_logits=step_logits,
+            seen_ids=seen_ids,
+            lens=lens,
+            finished=torch.zeros(num_seqs, dtype=torch.bool, device=self.device),
+            outputs=[[] for _ in prompts],
+        )
+
+    @torch.inference_mode()
+    def decode_step(self, state: DecodeState) -> torch.Tensor:
+        """Advance a static batch by one token, and return what each row drew.
+        Shapes:
+            -> [batch] int64
+        """
+        next_ids = self.sampler(
+            state.step_logits, state.params, state.seen_ids, state.generator
+        )
+        state.record(next_ids)
+        if state.done:
+            return next_ids
+        # Finished rows idle: feed their (already seen) first token so the
+        # step stays well-formed for any vocab, and discard their output.
+        feed = torch.where(state.finished, state.seen_ids[:, 0], next_ids)
+        state.seen_ids = torch.cat((state.seen_ids, feed.unsqueeze(1)), dim=1)
+        logits = self.model(
+            feed.unsqueeze(1),
+            state.lens.unsqueeze(1),
+            state.manager.begin_decode(state.slots),
+        )
+        state.step_logits = logits[:, 0]
+        state.lens = state.lens + 1
+        state.steps += 1
+        return next_ids
+
+    def generate_batch_ids(
+        self,
+        prompts: list[list[int]],
+        params: SamplingParams | list[SamplingParams] | None = None,
+        max_model_len: int | None = None,
+        timing: Timing | None = None,
+    ) -> list[list[int]]:
+        """Decode a static batch: one padded prefill, then lockstep decode."""
+        start = self._now() if timing is not None else 0.0
+        state = self.prefill_batch(prompts, params, max_model_len)
+        prefill_end = self._now() if timing is not None else 0.0
+        if timing is not None:
+            timing.prefill_s += prefill_end - start
+        while not state.done:
+            self.decode_step(state)
         if timing is not None:
             timing.decode_s += self._now() - prefill_end
-        return outputs
+            timing.decode_steps += state.steps
+        return state.outputs
 
     def generate_batch(
         self,

@@ -236,6 +236,30 @@ def test_static_batch_matches_one_at_a_time_on_tiny_model(tiny_checkpoint_path, 
 
 
 @backends("all")
+def test_hand_driven_step_loop_matches_generate(tiny_checkpoint_path, device):
+    """`generate_batch_ids` is exactly a prefill plus decode steps until the
+    batch is done, and nothing else.
+
+    The split is what the decode-step microbenchmark times, what graph capture
+    will capture, and what the continuous-batching scheduler will interleave,
+    so it has to keep producing what the loop it came out of produced.
+    """
+    llm = load_llm(str(tiny_checkpoint_path), device)
+    budgets = [8, 12, 5, 12]
+    params = [greedy(n) for n in budgets]
+    llm.generate_batch_ids(TINY_PROMPTS, params)
+
+    state = llm.prefill_batch(TINY_PROMPTS, params)
+    while not state.done:
+        llm.decode_step(state)
+
+    assert state.outputs == llm.generate_batch_ids(TINY_PROMPTS, params)
+    # A wave's first token falls out of the prefill logits, so the longest
+    # budget in the batch costs one fewer step than it produces tokens.
+    assert state.steps == max(budgets) - 1
+
+
+@backends("all")
 def test_static_batch_matches_one_at_a_time_on_qwen(qwen3_path, device):
     """Real-weight equivalence, where EOS can fire and rows finish at
     different steps while the rest of the batch continues.
