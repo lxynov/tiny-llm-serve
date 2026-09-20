@@ -31,14 +31,15 @@ from dataclasses import dataclass
 from math import atan2, degrees
 from pathlib import Path
 
-from benchmarks.report import Row, build_rows, read_records
-from benchmarks.sweep import read_manifest
+from benchmarks.throughput.report import Row, build_rows, read_records
+from benchmarks.throughput.sweep import read_manifest
 
-# The site self-hosts these two faces; instanced copies live next to this module
-# so a figure drawn on a laptop matches one drawn in CI, the same way a pinned
-# commit makes two trials comparable. Absent, matplotlib walks the stacks below
-# -- which are the page's own CSS fallbacks, in the page's own order.
-FONT_DIR = Path(__file__).parent / "assets" / "fonts"
+# The site self-hosts these two faces; instanced copies are vendored in the
+# benchmarks package -- shared, since any benchmark may draw a published figure
+# -- so a figure drawn on a laptop matches one drawn in CI, the same way a
+# pinned commit makes two trials comparable. Absent, matplotlib walks the
+# stacks below, which are the page's own CSS fallbacks in the page's own order.
+FONT_DIR = Path(__file__).parent.parent / "assets" / "fonts"
 
 SERIF = [
     "Source Serif 4",

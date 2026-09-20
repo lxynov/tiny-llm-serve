@@ -27,7 +27,7 @@ matter more than anything else this file does:
   find nothing to skip.
 
 Usage (from the repo root):
-    python -m benchmarks.sweep --model Qwen/Qwen3-8B --dtype bfloat16 \
+    python -m benchmarks.throughput.sweep --model Qwen/Qwen3-8B --dtype bfloat16 \
         --num-requests 128 --batch-sizes 1,2,4,8,16,32,64,128
 """
 
@@ -41,13 +41,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from benchmarks.bench_throughput import (
-    DTYPES,
-    OOM_EXIT,
-    RESULTS_DIR,
-    check_whole_waves,
-)
-from benchmarks.workloads import WORKLOADS
+from benchmarks.records import DTYPES, OOM_EXIT
+from benchmarks.throughput.bench import OUTPUT_DIR, check_whole_waves
+from benchmarks.throughput.workloads import WORKLOADS
 from tiny_llm_serve.models import loader
 
 # The folder's index, and the one file in it that is not a trial.
@@ -274,7 +270,7 @@ def run(args: argparse.Namespace, trial: Trial, run_dir: Path) -> str:
     command = [
         sys.executable,
         "-m",
-        "benchmarks.bench_throughput",
+        "benchmarks.throughput.bench",
         "--model",
         args.model,
         "--workload",
@@ -327,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default=None, help="default: auto-select")
     parser.add_argument("--dtype", choices=sorted(DTYPES), default="bfloat16")
     parser.add_argument(
-        "--output-dir", type=Path, default=RESULTS_DIR, help="parent of the run folder"
+        "--output-dir", type=Path, default=OUTPUT_DIR, help="parent of the run folder"
     )
     parser.add_argument(
         "--run-name",

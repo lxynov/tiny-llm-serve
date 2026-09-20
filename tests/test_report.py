@@ -1,13 +1,13 @@
 import json
 
-from benchmarks.report import (
+from benchmarks.throughput.report import (
     build_rows,
     decode_occupancy,
     inconsistencies,
     read_records,
     report,
 )
-from benchmarks.sweep import MANIFEST
+from benchmarks.throughput.sweep import MANIFEST
 
 
 def record(

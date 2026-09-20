@@ -9,9 +9,9 @@ gets, and where a curve is allowed to stop.
 
 import pytest
 
-from benchmarks.figures import THEMES, ink_ramp, plot, series_points
-from benchmarks.report import build_rows, read_records
-from benchmarks.sweep import read_manifest
+from benchmarks.throughput.figures import THEMES, ink_ramp, plot, series_points
+from benchmarks.throughput.report import build_rows, read_records
+from benchmarks.throughput.sweep import read_manifest
 from tests.test_report import entry, record, write_sweep
 
 pytest.importorskip("matplotlib")
