@@ -6,7 +6,7 @@ import torch
 
 from benchmarks.records import environment, git_state
 from benchmarks.roofline import decode_bytes_read, weight_bytes
-from benchmarks.throughput.bench import decode_groups, main
+from benchmarks.throughput.bench import decode_groups, main, trial_name
 from benchmarks.throughput.workloads import build_workload
 
 
@@ -27,8 +27,7 @@ def test_harness_writes_a_complete_record(tiny_checkpoint_path, tmp_path):
 
     (path,) = tmp_path.glob("*.json")
     assert json.loads(path.read_text()) == record
-    assert path.stem == record["run_id"]
-    assert "-cpu-sequential-uniform-512x128-" in record["run_id"]
+    assert path.stem == record["run_id"] == "sequential-uniform-512x128"
     assert record["engine_mode"] == "sequential"
     assert record["workload"] == "uniform-512x128"
     assert record["commit"] is not None
@@ -47,6 +46,17 @@ def test_harness_writes_a_complete_record(tiny_checkpoint_path, tmp_path):
     # Both memory peaks are recorded, and both are null off-GPU.
     assert metrics["peak_gpu_memory_allocated_bytes"] is None
     assert metrics["peak_gpu_memory_reserved_bytes"] is None
+
+
+def test_trial_names_sort_into_the_batch_size_ladder():
+    """The folder already says when, where and on which commit; a trial's name
+    only has to tell it from the other trials there."""
+    names = [trial_name("static", "mixed-out", size) for size in (1, 8, 64, 256)]
+
+    assert names[0] == "static-mixed-out-bs001"
+    assert names == sorted(names)  # unpadded, bs256 would sort before bs64
+    # The baseline has no batch size to name.
+    assert trial_name("sequential", "mixed-out", None) == "sequential-mixed-out"
 
 
 def test_out_of_memory_is_recorded_rather_than_raised(
@@ -74,8 +84,9 @@ def test_out_of_memory_is_recorded_rather_than_raised(
     assert record["status"] == "oom"
     assert "out of memory" in record["error"].lower()
     assert record["metrics"] == {}
-    # Identified exactly like a completed run, which is what lets the sweep
-    # recognize the ceiling on a restart.
+    # Identified exactly like a completed run: the ceiling is a point on the
+    # curve, filed under the batch size that did not fit.
+    assert path.stem == "static-uniform-512x128-bs002"
     assert record["config"]["batch_size"] == 2
     assert record["workload"] == "uniform-512x128"
     assert record["engine_mode"] == "static"

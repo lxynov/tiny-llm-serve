@@ -11,7 +11,6 @@ first.
 import os
 import platform
 import subprocess
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,21 +91,20 @@ def environment(device: str) -> dict:
     return info
 
 
-def provenance(model: str, device: str, *label: str) -> dict:
+def provenance(model: str, device: str, name: str) -> dict:
     """Who ran what, where, and from which commit.
 
-    `label` names the run within its benchmark -- the mode and workload of a
-    throughput trial, say -- and lands in the filename, which leads with the
-    UTC timestamp and the device so a directory listing sorts into a history.
-    Identical across benchmarks on purpose: two records that describe their
-    conditions differently cannot be checked against each other by a reader or
-    by a report.
+    `name` is the record's file name, and only has to tell it apart from the
+    other runs in its folder -- a throughput trial's mode, workload and batch
+    size, say. When, where and from which commit are the folder's to say, and
+    are in the record below either way. Identical across benchmarks on purpose:
+    two records that describe their conditions differently cannot be checked
+    against each other by a reader or by a report.
     """
     now = datetime.now(timezone.utc)
     commit, dirty = git_state()
     return {
-        "run_id": f"{now:%Y%m%d-%H%M%S}-{device}-{'-'.join(label)}-"
-        f"{uuid.uuid4().hex[:6]}",
+        "run_id": name,
         "date": now.isoformat(timespec="seconds"),
         "commit": commit,
         "dirty": dirty,

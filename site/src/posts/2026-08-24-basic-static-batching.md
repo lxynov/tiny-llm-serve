@@ -117,7 +117,7 @@ The model used is Qwen3-8B in bfloat16.
 
 1. Increasing the batch size improves throughput — initially linearly, then with diminishing returns, and ultimately leading to OOMs.
 
-![Output tokens per second against batch size, on log-log axes.](/images/qwen3-8b-bfloat16-n512-seed0-cuda-throughput-{theme}.png)
+![Output tokens per second against batch size, on log-log axes.](/images/20260819-faa6722-cuda-h100-80gb-hbm3-qwen3-8b-bfloat16-n512-throughput-{theme}.png)
 
 2. MBU (Memory Bandwidth Utilization) is consistently low across all the batch sizes and workloads, ranging from 0.18
    to 0.25. Note that decoding is memory-bound, so the memory access latency directly impacts performance. However, only

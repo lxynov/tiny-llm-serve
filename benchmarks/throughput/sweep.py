@@ -1,7 +1,7 @@
 """Batch-size sweep driver.
 
 Walks a workload x batch-size grid, running each trial as a separate
-`bench_throughput` process and leaving the records behind. Three properties
+`bench_throughput` process and leaving the records behind. Four properties
 matter more than anything else this file does:
 
 - **A fresh process per trial.** The caching allocator's pool survives within a
@@ -15,16 +15,12 @@ matter more than anything else this file does:
   hopeless rather than attempted -- memory demand only rises with the batch
   size, so the rest of the ladder would buy a model load apiece to confirm
   what the first failure already established. Other workloads keep going.
-- **Resumable.** Trials already recorded are skipped, so an interrupted sweep
-  can be restarted without re-paying for what it has -- including the
-  out-of-memory records, which put the ceiling back before the restart can
-  climb into it again.
 - **One folder per sweep.** Records land together in a directory under
-  `--output-dir`, named after the conditions the sweep holds fixed, next to a
-  `sweep.json` index of the grid. Naming it after the conditions rather than
-  the clock is what keeps the previous point true: a folder stamped with the
-  start time would be a new empty one on every restart, and the resume would
-  find nothing to skip.
+  `--output-dir`, next to a `sweep.json` index of the grid. The folder is
+  named for the day the sweep started and the commit it measures, then for
+  what it held fixed -- the chip included, not just the kind of device. A sweep
+  never writes into a folder that already exists, so two runs of one grid
+  cannot pass for one curve.
 
 Usage (from the repo root):
     python -m benchmarks.throughput.sweep --model Qwen/Qwen3-8B --dtype bfloat16 \
@@ -41,8 +37,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from benchmarks.records import DTYPES, OOM_EXIT
-from benchmarks.throughput.bench import OUTPUT_DIR, check_whole_waves
+from benchmarks.records import DTYPES, OOM_EXIT, cpu_name, git_state
+from benchmarks.throughput.bench import OUTPUT_DIR, check_whole_waves, trial_name
 from benchmarks.throughput.workloads import WORKLOADS
 from tiny_llm_serve.models import loader
 
@@ -51,27 +47,10 @@ MANIFEST = "sweep.json"
 
 
 @dataclass(frozen=True)
-class Conditions:
-    """What a sweep holds fixed across every trial in it."""
-
-    model: str
-    dtype: str
-    num_requests: int
-    seed: int
-
-
-@dataclass(frozen=True)
 class Trial:
     workload: str
     mode: str
     batch_size: int | None
-
-
-TrialId = tuple[Conditions, Trial]
-
-
-def trial_id(conditions: Conditions, trial: Trial) -> TrialId:
-    return (conditions, trial)
 
 
 def slug(text: str) -> str:
@@ -83,61 +62,78 @@ def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9.]+", "-", text.lower()).strip("-.")
 
 
-def sweep_id(conditions: Conditions, device: str) -> str:
-    """The folder this sweep's records belong in.
+def probe_chip(device: str) -> str | None:
+    """The name of the chip `device` runs on, as a record's `environment` block
+    would report it.
 
-    Named after the conditions rather than the clock, because the folder is
-    what a restart reads: one stamped with the start time would be a new empty
-    directory every run, and the sweep would re-buy a grid it already owns.
-    Everything that decides whether two trials can be plotted against each
-    other is in the name instead, so changing any of them writes elsewhere --
-    the device included, which the record format otherwise asks you to keep
-    apart by hand.
+    A CUDA device is asked in a throwaway process: reading the name here would
+    open a CUDA context in *this* one and hold a few hundred MB on the card for
+    the whole sweep -- memory the trials measuring their own ceiling would no
+    longer have. The child inherits the same `CUDA_VISIBLE_DEVICES` the trials
+    do, so `cuda:1` names the card they will actually land on. MPS and CPU runs
+    are bound by the SoC or CPU itself, which costs nothing to read.
+    """
+    if not loader.is_cuda(device):
+        return cpu_name()
+    probe = "import sys, torch; print(torch.cuda.get_device_name(sys.argv[1]))"
+    return subprocess.check_output(
+        [sys.executable, "-c", probe, device], text=True
+    ).strip()
+
+
+def hardware(device: str, chip: str | None) -> str:
+    """The kind of device and the chip behind it, as one path component.
+
+    The kind alone says almost nothing about the numbers -- "cuda" covers an
+    RTX 4090 and an H200, a 5x spread in the memory bandwidth decode is bound
+    by -- and the chip alone would file a Mac's CPU and MPS runs together. The
+    index in `cuda:1` is dropped: it says which card, not what the card is.
+    """
+    kind = device.split(":")[0]
+    return slug(f"{kind} {(chip or 'unknown').removeprefix('NVIDIA ')}")
+
+
+def code_version(commit: str | None, dirty: bool | None) -> str:
+    """The code a sweep measures, as one path component.
+
+    The short commit, marked when the tree carried uncommitted changes to it:
+    a dirty run is not the commit it names, so it must not land among that
+    commit's clean records.
+    """
+    if commit is None:
+        return "unknown-commit"
+    return f"{commit[:7]}-dirty" if dirty else commit[:7]
+
+
+def sweep_id(
+    started: datetime,
+    code: str,
+    hardware: str,
+    model: str,
+    dtype: str,
+    num_requests: int,
+) -> str:
+    """The folder this sweep's records land in.
+
+    It leads with the day the sweep started and the code it measures, as
+    `code_version` spells it, so a listing of `--output-dir` sorts into a
+    history of the engine. After them come the chip and what the sweep held
+    fixed, so the name alone says whether two sweeps can be plotted against
+    each other -- the chip included, which the record format otherwise asks
+    you to keep apart by hand. The day is taken in UTC, like every timestamp in
+    the records, and from the start, so a sweep that runs past midnight keeps
+    one name.
     """
     return "-".join(
         (
-            slug(Path(conditions.model).name),
-            slug(conditions.dtype),
-            f"n{conditions.num_requests}",
-            f"seed{conditions.seed}",
-            slug(device),
+            f"{started:%Y%m%d}",
+            code,
+            hardware,
+            slug(Path(model).name),
+            slug(dtype),
+            f"n{num_requests}",
         )
     )
-
-
-def recorded_trials(output_dir: Path) -> dict[TrialId, str]:
-    """The trials `output_dir` already holds records for, each mapped to how it
-    ended.
-
-    How it ended matters as much as that it ran: a resumed sweep has to
-    rediscover the ceiling a previous one found, or it walks straight back into
-    it at the next batch size up. Records written before the field existed
-    finished, so they read as "ok".
-    """
-    ids = {}
-    for path in sorted(output_dir.glob("*.json")):
-        if path.name == MANIFEST:
-            continue  # the folder's own index, not a trial in it
-        try:
-            record = json.loads(path.read_text())
-            ids[
-                trial_id(
-                    Conditions(
-                        record["model"],
-                        record["config"]["dtype"],
-                        record["num_requests"],
-                        record["seed"],
-                    ),
-                    Trial(
-                        record["workload"],
-                        record["engine_mode"],
-                        record["config"]["batch_size"],
-                    ),
-                )
-            ] = record.get("status", "ok")
-        except (OSError, ValueError, KeyError):
-            continue  # not one of ours, or written by a run that died
-    return ids
 
 
 def trial_entry(
@@ -155,30 +151,22 @@ def trial_entry(
 
 
 def read_manifest(run_dir: Path) -> dict:
-    """The index a previous sweep over this folder left, or nothing."""
+    """The index the sweep left in this folder, or nothing."""
     try:
         index = json.loads((run_dir / MANIFEST).read_text())
     except (OSError, ValueError):
-        return {}  # no sweep here yet, or one that died mid-write
+        return {}  # no index here, or one cut off mid-write
     return index if isinstance(index, dict) else {}
-
-
-def banked_trials(index: dict) -> dict[Trial, dict]:
-    """The entries an earlier index holds, keyed by the trial each describes."""
-    banked = {}
-    for entry in index.get("trials", []):
-        try:
-            banked[Trial(entry["workload"], entry["mode"], entry["batch_size"])] = entry
-        except (TypeError, KeyError):
-            continue  # not one of ours
-    return banked
 
 
 def manifest(
     sweep: str,
     args: argparse.Namespace,
     device: str,
-    started: str,
+    chip: str | None,
+    commit: str | None,
+    dirty: bool | None,
+    started: datetime,
     entries: list[dict],
     ceiling: dict[str, int],
 ) -> dict:
@@ -191,7 +179,7 @@ def manifest(
     """
     return {
         "sweep_id": sweep,
-        "started": started,
+        "started": started.isoformat(timespec="seconds"),
         "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "conditions": {
             "model": args.model,
@@ -199,6 +187,9 @@ def manifest(
             "num_requests": args.num_requests,
             "seed": args.seed,
             "device": device,
+            "chip": chip,
+            "commit": commit,
+            "dirty": dirty,
         },
         "grid": {
             "workloads": args.workloads,
@@ -325,13 +316,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output-dir", type=Path, default=OUTPUT_DIR, help="parent of the run folder"
     )
-    parser.add_argument(
-        "--run-name",
-        default=None,
-        help="folder under --output-dir to gather this sweep's records in "
-        "(default: named after the conditions, which is what lets a restart "
-        "find them and resume)",
-    )
     args = parser.parse_args(argv)
 
     unknown = set(args.workloads) - set(WORKLOADS)
@@ -340,61 +324,61 @@ def main(argv: list[str] | None = None) -> int:
     for size in args.batch_sizes:
         check_whole_waves(args.num_requests, size)
 
-    fixed = Conditions(args.model, args.dtype, args.num_requests, args.seed)
     # Resolving the device here reads the driver's flag and, at most, asks
-    # whether a GPU exists -- deliberately not `get_device_properties`, which
-    # would open a CUDA context in *this* process and hold a few hundred MB on
-    # the card for the whole sweep. That is memory the trials measuring their
-    # own ceiling would no longer have, so the exact chip stays where it costs
-    # nothing to read: the `environment` block of every record.
+    # whether a GPU exists; the chip comes from `probe_chip`, which keeps any
+    # CUDA context out of this process.
     device = loader.resolve_device(args.device)
-    sweep = args.run_name or sweep_id(fixed, device)
+    chip = probe_chip(device)
+    commit, dirty = git_state()
+    started = datetime.now(timezone.utc)
+    sweep = sweep_id(
+        started,
+        code_version(commit, dirty),
+        hardware(device, chip),
+        args.model,
+        args.dtype,
+        args.num_requests,
+    )
     run_dir = args.output_dir / sweep
-    run_dir.mkdir(parents=True, exist_ok=True)
+    if run_dir.exists():
+        # Trial files are named for the trial alone, so a second run of the
+        # grid would overwrite the first one record at a time, leaving a mix
+        # that nothing on disk could tell apart.
+        parser.error(f"{run_dir} already exists; move it aside to rerun this sweep")
+    run_dir.mkdir(parents=True)
 
-    previous = read_manifest(run_dir)
-    started = previous.get("started") or datetime.now(timezone.utc).isoformat(
-        timespec="seconds"
-    )
-    # A trial that ran under an earlier sweep keeps the entry it earned then:
-    # the index describes the grid, not the invocation that happened to fill it
-    # in, so resuming a finished sweep rewrites the same file.
-    banked = banked_trials(previous)
-    recorded = recorded_trials(run_dir)
     trials = plan(args)
-    entries: dict[Trial, dict] = {}
-    skipped, oom, unfit, failed = [], [], [], []
+    entries: list[dict] = []
+    oom, unfit, failed = [], [], []
     ceiling: dict[str, int] = {}
+
+    def save_manifest() -> None:
+        write_manifest(
+            run_dir,
+            manifest(
+                sweep, args, device, chip, commit, dirty, started, entries, ceiling
+            ),
+        )
+
     print(f"{len(trials)} trials -> {run_dir}")
-    write_manifest(
-        run_dir, manifest(sweep, args, device, started, list(banked.values()), ceiling)
-    )
+    save_manifest()
     for index, trial in enumerate(trials, start=1):
         progress = f"[{index}/{len(trials)}] {label(trial)}"
-        status = recorded.get(trial_id(fixed, trial))
-        if status is not None:
-            print(f"{progress}: already recorded, skipping")
-            skipped.append(trial)
-            if status == "oom":
-                note_ceiling(ceiling, trial)
-            entries[trial] = banked.get(trial) or trial_entry(trial, status)
-        elif over_ceiling(ceiling, trial):
+        if over_ceiling(ceiling, trial):
             limit = ceiling[trial.workload]
             print(f"{progress}: not attempted, bs={limit} already ran out of memory")
             unfit.append(trial)
-            entries[trial] = trial_entry(trial, "not attempted")
+            entries.append(trial_entry(trial, "not attempted"))
         else:
             print(progress)
-            before = set(run_dir.glob("*.json"))
             start = time.perf_counter()
             outcome = run(args, trial, run_dir)
             seconds = time.perf_counter() - start
             # Whatever the trial wrote, including the record an out-of-memory
             # one leaves behind; a trial that died before writing has none.
-            written = sorted(set(run_dir.glob("*.json")) - before)
-            entries[trial] = trial_entry(
-                trial, outcome, seconds, written[-1].name if written else None
-            )
+            name = f"{trial_name(trial.mode, trial.workload, trial.batch_size)}.json"
+            written = name if (run_dir / name).exists() else None
+            entries.append(trial_entry(trial, outcome, seconds, written))
             if outcome == "oom":
                 print(f"  OUT OF MEMORY: {label(trial)}; the ceiling for this workload")
                 note_ceiling(ceiling, trial)
@@ -402,14 +386,11 @@ def main(argv: list[str] | None = None) -> int:
             elif outcome == "failed":
                 print(f"  FAILED: {label(trial)}", file=sys.stderr)
                 failed.append(trial)
-        write_manifest(
-            run_dir,
-            manifest(sweep, args, device, started, list(entries.values()), ceiling),
-        )
+        save_manifest()
 
-    ran = len(trials) - len(skipped) - len(oom) - len(unfit) - len(failed)
+    ran = len(trials) - len(oom) - len(unfit) - len(failed)
     print(
-        f"\n{ran} run, {len(skipped)} skipped, {len(oom)} out of memory, "
+        f"\n{ran} run, {len(oom)} out of memory, "
         f"{len(unfit)} not attempted, {len(failed)} failed"
     )
     for trial in oom:
