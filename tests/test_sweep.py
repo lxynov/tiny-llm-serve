@@ -3,14 +3,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from benchmarks.records import cpu_name, git_state
+from benchmarks.records import code_version, cpu_name, git_state, hardware
 from benchmarks.throughput import bench, sweep
 from benchmarks.throughput.sweep import (
     MANIFEST,
     Trial,
-    code_version,
     exit_code,
-    hardware,
     main,
     plan,
     sweep_id,

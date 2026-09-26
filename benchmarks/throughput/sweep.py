@@ -29,7 +29,6 @@ Usage (from the repo root):
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 import time
@@ -37,7 +36,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from benchmarks.records import DTYPES, OOM_EXIT, cpu_name, git_state
+from benchmarks.records import (
+    DTYPES,
+    OOM_EXIT,
+    code_version,
+    cpu_name,
+    git_state,
+    hardware,
+    slug,
+)
 from benchmarks.throughput.bench import (
     MODES,
     OUTPUT_DIR,
@@ -57,15 +64,6 @@ class Trial:
     batch_size: int
 
 
-def slug(text: str) -> str:
-    """`text` as a lowercase path component: alphanumerics, dots and dashes.
-
-    Dots survive because model names carry them -- `qwen3-0.6b` reads as the
-    checkpoint it names and `qwen3-0-6b` does not.
-    """
-    return re.sub(r"[^a-z0-9.]+", "-", text.lower()).strip("-.")
-
-
 def probe_chip(device: str) -> str | None:
     """The name of the chip `device` runs on, as a record's `environment` block
     would report it.
@@ -83,30 +81,6 @@ def probe_chip(device: str) -> str | None:
     return subprocess.check_output(
         [sys.executable, "-c", probe, device], text=True
     ).strip()
-
-
-def hardware(device: str, chip: str | None) -> str:
-    """The kind of device and the chip behind it, as one path component.
-
-    The kind alone says almost nothing about the numbers -- "cuda" covers an
-    RTX 4090 and an H200, a 5x spread in the memory bandwidth decode is bound
-    by -- and the chip alone would file a Mac's CPU and MPS runs together. The
-    index in `cuda:1` is dropped: it says which card, not what the card is.
-    """
-    kind = device.split(":")[0]
-    return slug(f"{kind} {(chip or 'unknown').removeprefix('NVIDIA ')}")
-
-
-def code_version(commit: str | None, dirty: bool | None) -> str:
-    """The code a sweep measures, as one path component.
-
-    The short commit, marked when the tree carried uncommitted changes to it:
-    a dirty run is not the commit it names, so it must not land among that
-    commit's clean records.
-    """
-    if commit is None:
-        return "unknown-commit"
-    return f"{commit[:7]}-dirty" if dirty else commit[:7]
 
 
 def sweep_id(

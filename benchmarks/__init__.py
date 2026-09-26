@@ -4,6 +4,7 @@ One package per benchmark, because each answers a different question and
 nothing about the way one measures carries over to another:
 
     throughput/   a full workload pass: how many tokens per second, end to end
+    decode_step/  one engine step at a chosen (batch, kv_len), in isolation
 
 Anything at this level is shared by all of them, and is the only thing a new
 benchmark should be reaching for:
