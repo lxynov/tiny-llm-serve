@@ -1,0 +1,282 @@
+{
+  "sweep_id": "20260819-faa6722-cuda-h100-80gb-hbm3-qwen3-8b-bfloat16-n512",
+  "started": "2026-08-19T18:53:20+00:00",
+  "updated": "2026-08-19T23:23:27+00:00",
+  "conditions": {
+    "model": "Qwen/Qwen3-8B",
+    "dtype": "bfloat16",
+    "num_requests": 512,
+    "seed": 0,
+    "device": "cuda",
+    "chip": "NVIDIA H100 80GB HBM3",
+    "commit": "faa672214e4fa9959d68bc2c95645d3c3abc47c6",
+    "dirty": false
+  },
+  "grid": {
+    "workloads": [
+      "uniform-512x128",
+      "mixed-out",
+      "sharegpt-like"
+    ],
+    "batch_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64,
+      128,
+      256,
+      512
+    ],
+    "sequential": false
+  },
+  "ceiling": {
+    "mixed-out": 512,
+    "sharegpt-like": 256,
+    "uniform-512x128": 512
+  },
+  "trials": [
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 1,
+      "status": "ok",
+      "seconds": 1577.3440096941777,
+      "record": "static-uniform-512x128-bs001.json"
+    },
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 2,
+      "status": "ok",
+      "seconds": 813.7582726003602,
+      "record": "static-uniform-512x128-bs002.json"
+    },
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 4,
+      "status": "ok",
+      "seconds": 451.9650433412753,
+      "record": "static-uniform-512x128-bs004.json"
+    },
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 8,
+      "status": "ok",
+      "seconds": 233.66453170310706,
+      "record": "static-uniform-512x128-bs008.json"
+    },
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 16,
+      "status": "ok",
+      "seconds": 148.15132434293628,
+      "record": "static-uniform-512x128-bs016.json"
+    },
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 32,
+      "status": "ok",
+      "seconds": 89.22106113983318,
+      "record": "static-uniform-512x128-bs032.json"
+    },
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 64,
+      "status": "ok",
+      "seconds": 63.40231319097802,
+      "record": "static-uniform-512x128-bs064.json"
+    },
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 128,
+      "status": "ok",
+      "seconds": 53.379100027959794,
+      "record": "static-uniform-512x128-bs128.json"
+    },
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 256,
+      "status": "ok",
+      "seconds": 50.54518717015162,
+      "record": "static-uniform-512x128-bs256.json"
+    },
+    {
+      "workload": "uniform-512x128",
+      "mode": "static",
+      "batch_size": 512,
+      "status": "oom",
+      "seconds": 26.249585974030197,
+      "record": "static-uniform-512x128-bs512.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 1,
+      "status": "ok",
+      "seconds": 1254.7277180603705,
+      "record": "static-mixed-out-bs001.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 2,
+      "status": "ok",
+      "seconds": 981.1437827032059,
+      "record": "static-mixed-out-bs002.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 4,
+      "status": "ok",
+      "seconds": 708.0103835118935,
+      "record": "static-mixed-out-bs004.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 8,
+      "status": "ok",
+      "seconds": 510.17686424497515,
+      "record": "static-mixed-out-bs008.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 16,
+      "status": "ok",
+      "seconds": 339.5650492608547,
+      "record": "static-mixed-out-bs016.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 32,
+      "status": "ok",
+      "seconds": 223.19829100370407,
+      "record": "static-mixed-out-bs032.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 64,
+      "status": "ok",
+      "seconds": 148.31780704297125,
+      "record": "static-mixed-out-bs064.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 128,
+      "status": "ok",
+      "seconds": 114.86909594293684,
+      "record": "static-mixed-out-bs128.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 256,
+      "status": "ok",
+      "seconds": 102.31314682029188,
+      "record": "static-mixed-out-bs256.json"
+    },
+    {
+      "workload": "mixed-out",
+      "mode": "static",
+      "batch_size": 512,
+      "status": "oom",
+      "seconds": 23.84454537089914,
+      "record": "static-mixed-out-bs512.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 1,
+      "status": "ok",
+      "seconds": 2395.7098346878774,
+      "record": "static-sharegpt-like-bs001.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 2,
+      "status": "ok",
+      "seconds": 1836.8285055598244,
+      "record": "static-sharegpt-like-bs002.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 4,
+      "status": "ok",
+      "seconds": 1388.7121783196926,
+      "record": "static-sharegpt-like-bs004.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 8,
+      "status": "ok",
+      "seconds": 949.4775994550437,
+      "record": "static-sharegpt-like-bs008.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 16,
+      "status": "ok",
+      "seconds": 678.7813948448747,
+      "record": "static-sharegpt-like-bs016.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 32,
+      "status": "ok",
+      "seconds": 441.41408609598875,
+      "record": "static-sharegpt-like-bs032.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 64,
+      "status": "ok",
+      "seconds": 306.6577820489183,
+      "record": "static-sharegpt-like-bs064.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 128,
+      "status": "ok",
+      "seconds": 273.16008308995515,
+      "record": "static-sharegpt-like-bs128.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 256,
+      "status": "oom",
+      "seconds": 21.990172021090984,
+      "record": "static-sharegpt-like-bs256.json"
+    },
+    {
+      "workload": "sharegpt-like",
+      "mode": "static",
+      "batch_size": 512,
+      "status": "not attempted",
+      "seconds": null,
+      "record": null
+    }
+  ]
+}

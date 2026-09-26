@@ -9,9 +9,9 @@ of the batch was decoding sequences that had already finished.
 This module joins the index to the records, derives those two, and prints a
 table per workload. It also checks the thing the README's first rule asks of a
 comparison and no single record can confirm: that every trial in the folder ran
-the same commit on the same machine. A sweep resumed a week later against
-rebuilt code looks exactly like one run in an afternoon -- until a curve bends
-somewhere the engine did not change.
+the same commit on the same machine. A commit made while the sweep runs, or an
+edit to the tree, reaches every trial after it -- and the curve bends somewhere
+the engine did not change.
 
 Nothing here re-derives a workload to get its lengths. The generator behind a
 name can move, and a report that silently regenerates against today's version
@@ -20,7 +20,7 @@ records themselves.
 
 Usage (from the repo root):
     python -m benchmarks.throughput.report \
-        benchmarks/results/throughput/qwen3-8b-bfloat16-n512-seed0-cuda
+        benchmarks/results/throughput/20260819-faa6722-cuda-h100-80gb-hbm3-qwen3-8b-bfloat16-n512
 """
 
 import argparse
@@ -186,10 +186,12 @@ def inconsistencies(records: dict[str, dict]) -> list[str]:
     """Ways the folder breaks rule 1, one line each.
 
     A sweep folder is named after the conditions it holds fixed, so the name
-    already promises most of this -- but the name is built from the *flags*,
-    and neither the commit nor the machine is a flag. Resuming a sweep across
-    an engine change is the easy way to get a curve whose bend belongs to the
-    code rather than to the batch size, and nothing that writes here notices.
+    already promises most of this -- but only as they stood when the sweep
+    started. Each trial is a fresh process that imports the engine and reads
+    the commit for itself, so code committed or edited while a sweep runs
+    reaches the later trials and not the earlier ones: a curve whose bend
+    belongs to the code rather than to the batch size, and nothing that writes
+    here notices.
     """
     problems = []
 

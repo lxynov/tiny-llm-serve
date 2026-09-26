@@ -133,15 +133,29 @@ def run_config(args: argparse.Namespace) -> dict:
     }
 
 
+def trial_name(mode: str, workload: str, batch_size: int | None) -> str:
+    """A trial's file name, unique within its sweep's folder.
+
+    The folder's name carries everything else -- date, commit, chip, model,
+    dtype and request count. The batch size is zero-padded so a listing sorts
+    into the ladder the sweep climbed, and left out in sequential mode, which
+    has none.
+    """
+    name = f"{mode}-{workload}"
+    return name if batch_size is None else f"{name}-bs{batch_size:03d}"
+
+
 def identity(args: argparse.Namespace, device: str) -> dict:
     """The shared provenance block, plus what this benchmark was pointed at."""
-    return provenance(args.model, device, args.mode, args.workload) | {
+    config = run_config(args)
+    name = trial_name(args.mode, args.workload, config["batch_size"])
+    return provenance(args.model, device, name) | {
         "engine_mode": args.mode,
         "load": "offline-drain",
         "workload": args.workload,
         "num_requests": args.num_requests,
         "seed": args.seed,
-        "config": run_config(args),
+        "config": config,
     }
 
 

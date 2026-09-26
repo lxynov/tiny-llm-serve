@@ -108,9 +108,7 @@ because the caching allocator's pool outlives a run and trials sharing a
 process would report each other's peak memory, the metric that decides where
 the sweep ends. A trial that dies does not stop the sweep: running out of
 memory at a large batch size is *where capacity ran out*, which is a result,
-and aborting there would discard every trial still queued behind it. Trials
-already recorded in the output directory are skipped, so an interrupted sweep
-resumes rather than re-paying.
+and aborting there would discard every trial still queued behind it.
 
 Batch sizes run ascending behind the optional sequential baseline, so a sweep
 that dies at its memory ceiling has already banked the rest of the curve.
@@ -120,30 +118,38 @@ no metrics — and the sweep then stops raising the batch size for that workload
 instead of attempting the rest: memory demand only rises with the batch size,
 so every size above one that did not fit would spend a model load apiece to
 confirm what the first failure already established. Ceilings are per workload,
-so the other curves keep going, and because the ceiling is an ordinary record a
-resumed sweep reads it back rather than climbing into it again. Only an
-allocation failure counts as one: any other crash is a bug, and reading it as
-capacity would silently truncate a curve.
+so the other curves keep going. Only an allocation failure counts as one: any
+other crash is a bug, and reading it as capacity would silently truncate a
+curve.
 
 Every trial of one sweep writes into one folder under `--output-dir`, named
-after the conditions the sweep holds fixed:
+for when the sweep started, the code it measures, and what it held fixed:
 
 ```
-benchmarks/results/throughput/qwen3-8b-bfloat16-n128-seed0-cuda/
-├── sweep.json                                        # the grid, and how each trial ended
-├── 20260816-141203-cuda-static-mixed-out-a1b2c3.json
-└── ...
+benchmarks/results/throughput/20260816-faa6722-cuda-h100-80gb-hbm3-qwen3-8b-bfloat16-n128/
+├── sequential-mixed-out.json    # the baseline has no batch size
+├── static-mixed-out-bs001.json
+├── static-mixed-out-bs002.json
+├── ...
+└── sweep.json                   # the grid, and how each trial ended
 ```
 
-The name comes from the conditions rather than from the clock because the
-folder is what a restart reads: one stamped with the start time would be a new
-empty directory every run, and the resume would find nothing to skip. Anything
-that makes two trials incomparable — a different model, dtype, request count,
-seed, or device — writes somewhere else instead of landing next to results it
-cannot be plotted against. `--run-name` overrides the name. `sweep.json` is
-rewritten after every trial, so a sweep that dies part way through still leaves
-an index, and it carries the one outcome with no record of its own: the batch
-sizes the ceiling ruled out before they were ever attempted.
+The folder name reads date, commit, device and chip, model, dtype, request
+count. The date is the UTC day the sweep started, so `--output-dir` lists as a
+history and a sweep that runs past midnight keeps one name. The commit is the
+short hash, suffixed `-dirty` when the tree carries uncommitted changes, since
+a dirty run is not the commit it names. The chip is there because the kind of
+device says almost nothing: `cuda` covers an RTX 4090 and an H200, a 5× spread
+in the bandwidth decode is bound by.
+
+Inside, a trial is named for its mode, workload and batch size, zero-padded so
+a listing sorts into the ladder the sweep climbed. That is everything that
+varies between one folder's trials, so a second run of the same grid would
+overwrite the first one record at a time; a sweep therefore refuses to write
+into a folder that already exists, and rerunning one means moving the old folder
+aside. `sweep.json` is rewritten after every trial, so a sweep that dies part way
+through still leaves an index, and it carries the one outcome with no record of
+its own: the batch sizes the ceiling ruled out before they were ever attempted.
 
 ### Workloads
 
@@ -196,7 +202,7 @@ something a person can read.
 
 ```bash
 uv run python -m benchmarks.throughput.report \
-  benchmarks/results/throughput/qwen3-8b-bfloat16-n512-seed0-cuda
+  benchmarks/results/throughput/20260819-faa6722-cuda-h100-80gb-hbm3-qwen3-8b-bfloat16-n512
 ```
 
 It prints a table per workload — every trial in the grid, including the ones
@@ -230,7 +236,7 @@ post asks for the pair by writing `{theme}` where the variant goes, and the
 site serves whichever matches:
 
 ```markdown
-![Output tokens per second](/images/qwen3-8b-...-throughput-{theme}.png)
+![Output tokens per second](/images/20260819-faa6722-...-throughput-{theme}.png)
 ```
 
 **The two typefaces are vendored**, under `benchmarks/assets/fonts/` — static
@@ -260,9 +266,10 @@ sequence that has already stopped.
 The report also checks the one thing rule 1 asks of a sweep that no single
 record can confirm and the folder's name does not promise: that every trial ran
 the same commit, dtype and GPU, and that none of them measured a dirty tree.
-The name is built from the flags, and the commit is not a flag — so a sweep
-resumed across an engine change looks exactly like one run in an afternoon,
-until a curve bends somewhere the engine did not change. Disagreements print as
+The name records the commit as it stood when the sweep started, but each trial
+is a fresh process that imports the engine and reads the commit for itself — so
+code committed or edited while a sweep runs reaches only the trials after it,
+and a curve bends somewhere the engine did not change. Disagreements print as
 `WARNING` lines above the tables rather than failing: the records are still the
 results, they just are not a curve.
 
