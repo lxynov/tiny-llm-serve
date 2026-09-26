@@ -57,8 +57,10 @@ benchmarks/
 ├── hardware.py   peak device bandwidth, so a measured rate reads as a fraction
 ├── assets/       the vendored typefaces a published figure is drawn in
 ├── throughput/   a full workload pass: bench, sweep, report, figures, workloads
+├── decode_step/  one engine step at a chosen (batch, kv_len), in isolation
 └── results/
-    └── throughput/   one folder per sweep
+    ├── throughput/   one folder per sweep
+    └── decode-step/  one folder per day, commit, chip, model and dtype; a record per run
 ```
 
 Records land in `results/<benchmark>/`, so which question a record answers is
@@ -153,6 +155,71 @@ into a folder that already exists, and rerunning one means moving the old folder
 aside. `sweep.json` is rewritten after every trial, so a sweep that dies part way
 through still leaves an index, and it carries the one outcome with no record of
 its own: the batch sizes the ceiling ruled out before they were ever attempted.
+
+### Decode steps
+
+A sweep answers *how fast is a pass*; almost everything left to optimize moves
+one number inside it — `s_per_decode_step` at a given batch size and KV length.
+Draining a workload to read that number is waste, so
+`benchmarks/decode_step/bench.py` buys it directly:
+
+```bash
+uv run python -m benchmarks.decode_step.bench --model Qwen/Qwen3-8B \
+  --cells 1x576,8x576,64x576,256x576,64x2048 --warmup 10 --steps 30 --repeats 3
+```
+
+A cell is `BATCHxKV_LEN`. Each one runs one real prefill — so the state a step
+reads is the state the engine would have built, down to the logits it samples
+from — then `--warmup` steps that are thrown away, then `--repeats` windows of
+`--steps` timed steps. The prefill stops short of `kv_len`, so the timed steps
+center on it — the middle one attends exactly `kv_len` tokens — and the bytes
+charged to a window follow the cache as it grows a token per step. `kv_len 576`
+is the mean cached length of `uniform-512x128` over its run, so a cell at that
+length lands next to the baseline sweep.
+
+What is timed is the **engine** step — sampler, host bookkeeping and forward
+pass — not the model forward, because at small batch sizes the step's cost is
+decided by the loop around the forward rather than by the forward.
+
+**One clock per window**, closed after a barrier, so it measures the steps the
+device actually ran. A second clock closed before the barrier would say only how
+long the host loop ran — and a step that reads anything back, as a serving step
+must every step, blocks the host until the device catches up, so that clock
+tracks this one whichever side is slow. Whether a step is paying for overhead or
+for bytes is `mbu`'s question; where its time goes is the profiler's.
+
+| Column | Meaning |
+|---|---|
+| `ms/step` | Wall milliseconds per decode step: the number every optimization ahead of the scheduler moves |
+| `spread` | Slowest timed window over the fastest, as a percentage. A wide spread means the cell is measuring the machine's mood, not the step |
+| `GB/s`, `mbu` | `decode_bytes_read` over the window's wall time, and that against the card's peak HBM bandwidth. Same roofline the throughput harness charges, over the steps this one actually ran. Low at bs=1, where the weights are nearly all the bytes, means the step is paying for overhead |
+| `peak_GB` | `torch.cuda.max_memory_allocated`, reset per cell |
+
+Records land in `benchmarks/results/decode-step/`, one per invocation with
+every cell in it, carrying the same commit/dirty/environment block a throughput
+record does. Their folder is named the way a sweep's is — date, commit, device
+and chip, model, dtype — and each record for the UTC time it started:
+
+```
+benchmarks/results/decode-step/20260819-faa6722-cuda-h100-80gb-hbm3-qwen3-8b-bfloat16/
+├── 200125.json
+└── 213410.json
+```
+
+Runs that can be read against each other sit together, reruns side by side in
+the order they ran, and a run on another card or of other code lands somewhere
+else. A cell that runs out of memory records `"status": "oom"` and the
+run continues: the cells queued behind it have not been asked yet. Cells share
+one process, unlike a sweep's trials — reloading an 8B checkpoint per cell
+would cost more than the measurement — which is why allocated bytes are reset
+per cell and *reserved* bytes, the metric that decides a sweep's ceiling, are
+not reported here at all.
+
+Each slot's KV past the prompt is filled with random values rather than left
+zeroed. A step that reads past its own length — an off-by-one in a mask, a
+`seqused_k` counting the wrong thing — adds a row of zeros to a softmax and
+drifts quietly; against random values the same bug is loud enough for the
+correctness gate to catch.
 
 ### Workloads
 

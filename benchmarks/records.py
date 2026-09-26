@@ -10,6 +10,7 @@ first.
 
 import os
 import platform
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,6 +90,48 @@ def environment(device: str) -> dict:
             "cuda": torch.version.cuda,
         }
     return info
+
+
+def slug(text: str) -> str:
+    """`text` as a lowercase path component: alphanumerics, dots and dashes.
+
+    Dots survive because model names carry them -- `qwen3-0.6b` reads as the
+    checkpoint it names and `qwen3-0-6b` does not.
+    """
+    return re.sub(r"[^a-z0-9.]+", "-", text.lower()).strip("-.")
+
+
+def hardware(device: str, chip: str | None) -> str:
+    """The kind of device and the chip behind it, as one path component.
+
+    The kind alone says almost nothing about the numbers -- "cuda" covers an
+    RTX 4090 and an H200, a 5x spread in the memory bandwidth decode is bound
+    by -- and the chip alone would file a Mac's CPU and MPS runs together. The
+    index in `cuda:1` is dropped: it says which card, not what the card is.
+    """
+    kind = device.split(":")[0]
+    return slug(f"{kind} {(chip or 'unknown').removeprefix('NVIDIA ')}")
+
+
+def code_version(commit: str | None, dirty: bool | None) -> str:
+    """The code a run measures, as one path component.
+
+    The short commit, marked when the tree carried uncommitted changes to it:
+    a dirty run is not the commit it names, so it must not land among that
+    commit's clean records.
+    """
+    if commit is None:
+        return "unknown-commit"
+    return f"{commit[:7]}-dirty" if dirty else commit[:7]
+
+
+def record_hardware(record: dict) -> str:
+    """`hardware` for the device a record ran on, read back from the record."""
+    environment = record["environment"]
+    chip = (
+        environment["gpu"] if loader.is_cuda(record["device"]) else environment["cpu"]
+    )
+    return hardware(record["device"], chip)
 
 
 def provenance(model: str, device: str, name: str) -> dict:
