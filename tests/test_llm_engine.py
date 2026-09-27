@@ -253,7 +253,7 @@ def test_hand_driven_step_loop_matches_generate(tiny_checkpoint_path, device):
     while not state.done:
         llm.decode_step(state)
 
-    assert state.outputs == llm.generate_batch_ids(TINY_PROMPTS, params)
+    assert state.outputs() == llm.generate_batch_ids(TINY_PROMPTS, params)
     # A wave's first token falls out of the prefill logits, so the longest
     # budget in the batch costs one fewer step than it produces tokens.
     assert state.steps == max(budgets) - 1
