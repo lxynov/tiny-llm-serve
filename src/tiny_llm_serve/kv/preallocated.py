@@ -49,7 +49,10 @@ class PreallocatedKVManager(KVManager):
         ]
         # Cached tokens per slot.
         self.cached_seq_lens = torch.zeros(num_slots, dtype=torch.long, device=device)
+        self._cached_seq_lens_host = [0] * num_slots
         self._free_slots = list(range(num_slots))
+        self._last_slot_ids = torch.zeros(0, dtype=torch.long, device=device)
+        self._last_slot_ids_host: list[int] = []
 
     def can_admit(self, num_prompt_tokens: int) -> bool:
         return bool(self._free_slots) and num_prompt_tokens <= self.max_model_len
@@ -66,28 +69,52 @@ class PreallocatedKVManager(KVManager):
         if slot in self._free_slots:
             raise ValueError(f"slot {slot} is already free")
         self.cached_seq_lens[slot] = 0
+        self._cached_seq_lens_host[slot] = 0
         self._free_slots.append(slot)
 
     def begin_prefill(self, slots: list[int], prompt_lens: list[int]) -> "_PrefillStep":
-        slot_ids = torch.tensor(slots, device=self.device)
-        if (self.cached_seq_lens[slot_ids] != 0).any():
+        if any(self._cached_seq_lens_host[slot] for slot in slots):
             raise ValueError(f"prefill into occupied slots {slots}")
         if max(prompt_lens) > self.max_model_len:
             raise ValueError(f"prompt of {max(prompt_lens)} tokens exceeds a slot")
+        for slot, prompt_len in zip(slots, prompt_lens):
+            self._cached_seq_lens_host[slot] = prompt_len
+        slot_ids = self._update_slot_ids_if_changed(slots)
         self.cached_seq_lens[slot_ids] = torch.tensor(prompt_lens, device=self.device)
         return _PrefillStep(self, slot_ids)
 
     def begin_decode(self, slots: list[int]) -> "_DecodeStep":
-        slot_ids = torch.tensor(slots, device=self.device)
-        write_pos = self.cached_seq_lens[slot_ids]
-        if (write_pos == 0).any():
+        cached = [self._cached_seq_lens_host[slot] for slot in slots]
+        if not all(cached):
             raise ValueError(f"decode from unprefilled slots {slots}")
-        if (write_pos >= self.max_model_len).any():
+        kv_len = max(cached) + 1
+        if kv_len > self.max_model_len:
             raise RuntimeError(
                 f"out of KV capacity: a slot reached {self.max_model_len} tokens"
             )
+        for slot in slots:
+            self._cached_seq_lens_host[slot] += 1
+        slot_ids = self._update_slot_ids_if_changed(slots)
+        write_pos = self.cached_seq_lens[slot_ids]
         self.cached_seq_lens[slot_ids] = write_pos + 1
-        return _DecodeStep(self, slot_ids, write_pos)
+        return _DecodeStep(self, slot_ids, write_pos, kv_len)
+
+    def _update_slot_ids_if_changed(self, slots: list[int]) -> torch.Tensor:
+        """The device copy of `slots`, rebuilt only when the batch changes.
+
+        Rebuilding is a blocking host-to-device copy, and on CUDA a blocking copy
+        waits for all queued GPU work to finish -- a sync. A static batch passes
+        the same slots every step, so it pays that once, at prefill. The change
+        check compares against a host copy of the last slots, since reading the
+        device tensor back would sync too.
+
+        Shapes:
+            -> [batch] int64
+        """
+        if slots != self._last_slot_ids_host:
+            self._last_slot_ids_host = list(slots)
+            self._last_slot_ids = torch.tensor(slots, device=self.device)
+        return self._last_slot_ids
 
 
 class _PrefillStep:
@@ -144,16 +171,15 @@ class _DecodeStep:
         manager: PreallocatedKVManager,
         slot_ids: torch.Tensor,
         write_pos: torch.Tensor,
+        kv_len: int,
     ) -> None:
         self._manager = manager
         self._slot_ids = slot_ids
         self._write_pos = write_pos
-        self._kv_len = int(write_pos.max()) + 1
-        keys_valid = (
-            torch.arange(self._kv_len, device=manager.device) <= write_pos[:, None]
-        )
+        self._kv_len = kv_len
+        keys_valid = torch.arange(kv_len, device=manager.device) <= write_pos[:, None]
         self.attn_mask: torch.Tensor | None = keys_valid.view(
-            len(slot_ids), 1, 1, self._kv_len
+            len(slot_ids), 1, 1, kv_len
         )
 
     def append(
