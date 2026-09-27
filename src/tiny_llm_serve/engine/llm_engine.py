@@ -23,57 +23,77 @@ class Timing:
 class DecodeState:
     """One static batch mid-flight: everything a decode step reads and advances.
 
-    `step_logits` is a step's *input*, not its output: the prefill leaves the
-    logits the first sampled token comes from, and each step leaves the ones
-    the next step samples.
+    `step_logits` is a step's input, left by the prefill or the previous step
+    for this step to sample from. Every other tensor is allocated once and
+    written in place, so shapes never change (torch.compile, CUDA graphs).
+    Finishing is decided on the device; a step reads back only whether all rows
+    are done.
 
     Shapes:
         step_logits: [batch, vocab_size]
-        seen_ids:    [batch, num_seen] int64 -- prompt and generated ids, each
-                     row padded to the longest with its own first token
-        lens:        [batch] int64 -- tokens cached per row, i.e. the position
-                     this row's next token lands on
+        lens:        [batch] int64 -- tokens cached, i.e. the next token's position
+        seen_ids:    [batch, prompt_width + budget] int64 -- for the repetition
+                     penalty: prompts padded with their first token, then draws
+        sampled:     [batch, budget] int64 -- view of seen_ids' tail
+        first_ids:   [batch] int64 -- fed to finished rows while they idle
+        max_tokens:  [batch] int64 -- per-row budget; `budget` is their max
+        out_lens:    [batch] int64 -- ids each row keeps
         finished:    [batch] bool
     """
 
     manager: PreallocatedKVManager
     slots: list[int]
     params: SamplingParams
-    max_tokens: list[int]
     eos: int | None
     detokenize: Callable[[list[int]], str]
     generator: torch.Generator | None
     step_logits: torch.Tensor
-    seen_ids: torch.Tensor
     lens: torch.Tensor
+    seen_ids: torch.Tensor
+    sampled: torch.Tensor
+    first_ids: torch.Tensor
+    max_tokens: torch.Tensor
+    out_lens: torch.Tensor
     finished: torch.Tensor
-    outputs: list[list[int]]
     steps: int = 0
     done: bool = False
 
     def record(self, next_ids: torch.Tensor) -> None:
-        """Record next_ids
+        """Store this step's draws and finish the rows they end.
+
         Shapes:
             next_ids: [batch] int64
         """
-        stop = self.params.stop
-        for i, next_id in enumerate(next_ids.tolist()):
-            if self.finished[i]:
-                continue
-            if not self.params.ignore_eos and next_id == self.eos:
-                self.finished[i] = True
-                continue
-            self.outputs[i].append(next_id)
-            if len(self.outputs[i]) == self.max_tokens[i]:
-                self.finished[i] = True
-            elif stop:
-                # TODO: O(n^2) -- re-decodes and re-scans a row's whole
-                # output each step. Replace with a streaming detokenizer
-                # (incremental decode + tail scan) when we add token
-                # streaming.
-                text = self.detokenize(self.outputs[i])
-                self.finished[i] = any(s in text for s in stop)
-        self.done = bool(self.finished.all())
+        step = self.steps  # next_ids holds each row's (step + 1)-th id
+        # Finished rows' draws land past their out_len and are never read back.
+        self.sampled[:, step] = next_ids
+        if self.eos is not None and not self.params.ignore_eos:
+            at_eos = ~self.finished & (next_ids == self.eos)
+            self.out_lens.masked_fill_(at_eos, step)  # EOS is not an output id
+            self.finished |= at_eos
+        if self.params.stop:
+            self._apply_stop_strings(step)
+        self.finished |= self.max_tokens <= step + 1
+        self.done = bool(self.finished.all())  # the step's one read back
+
+    def outputs(self) -> list[list[int]]:
+        """The ids each row kept, read back once the batch has drained."""
+        return [
+            ids[:n] for ids, n in zip(self.sampled.tolist(), self.out_lens.tolist())
+        ]
+
+    def _apply_stop_strings(self, step: int) -> None:
+        """Finish every running row whose output contains a stop string.
+
+        Checked on the host, so it costs a sync per step when `params.stop` is set.
+        """
+        # TODO: O(n^2) -- re-decodes each row's whole output every step. Switch
+        # to a streaming detokenizer when we add token streaming.
+        texts = [self.detokenize(ids) for ids in self.sampled[:, : step + 1].tolist()]
+        hit = [any(s in text for s in self.params.stop) for text in texts]
+        stopped = torch.tensor(hit, device=self.finished.device) & ~self.finished
+        self.out_lens.masked_fill_(stopped, step + 1)
+        self.finished |= stopped
 
 
 class LLM:
@@ -131,38 +151,43 @@ class LLM:
         slots = [manager.admit(n) for n in prompt_lens]
 
         num_seqs, padded_len = len(prompts), max(prompt_lens)
+        budget = max(p.max_tokens for p in params_list)
         input_ids = torch.zeros((num_seqs, padded_len), dtype=torch.long)
+        # Sized up front so that its shape stays fixed, which is needed by
+        # torch.compile and CUDA graphs.
+        seen_ids = torch.zeros((num_seqs, padded_len + budget), dtype=torch.long)
         for i, prompt in enumerate(prompts):
-            input_ids[i, : len(prompt)] = torch.tensor(prompt, dtype=torch.long)
+            ids = torch.tensor(prompt, dtype=torch.long)
+            input_ids[i, : len(prompt)] = ids
+            seen_ids[i] = prompt[0]
+            seen_ids[i, : len(prompt)] = ids
         input_ids = input_ids.to(self.device)
+        seen_ids = seen_ids.to(self.device)
         positions = torch.arange(padded_len, device=self.device).expand(num_seqs, -1)
         lens = torch.tensor(prompt_lens, device=self.device)
+        max_tokens = torch.tensor(
+            [p.max_tokens for p in params_list], device=self.device
+        )
         step_logits = self.model(
             input_ids, positions, manager.begin_prefill(slots, prompt_lens), lens - 1
         )
-
-        # Track seen ids for the repetition penalty, padding each row with its
-        # own first token: duplicate ids are harmless to the penalty (the same
-        # penalized value is scattered twice), unlike an arbitrary pad id,
-        # which would spuriously penalize a token the row never produced.
-        seen_ids = input_ids.clone()
-        for i, n in enumerate(prompt_lens):
-            seen_ids[i, n:] = seen_ids[i, 0]
 
         return DecodeState(
             manager=manager,
             slots=slots,
             params=sampling_params,
-            max_tokens=[p.max_tokens for p in params_list],
             eos=self.tokenizer.eos_token_id,
             # decoding a flat id list yields a single str; the stub widens it to str | list[str]
             detokenize=self.tokenizer.decode,  # pyrefly: ignore[bad-argument-type]
             generator=generator,
             step_logits=step_logits,
-            seen_ids=seen_ids,
             lens=lens,
+            seen_ids=seen_ids,
+            sampled=seen_ids[:, padded_len:],
+            first_ids=seen_ids[:, 0],
+            max_tokens=max_tokens,
+            out_lens=max_tokens.clone(),
             finished=torch.zeros(num_seqs, dtype=torch.bool, device=self.device),
-            outputs=[[] for _ in prompts],
         )
 
     @torch.inference_mode()
@@ -179,15 +204,14 @@ class LLM:
             return next_ids
         # Finished rows idle: feed their (already seen) first token so the
         # step stays well-formed for any vocab, and discard their output.
-        feed = torch.where(state.finished, state.seen_ids[:, 0], next_ids)
-        state.seen_ids = torch.cat((state.seen_ids, feed.unsqueeze(1)), dim=1)
+        feed = torch.where(state.finished, state.first_ids, next_ids)
         logits = self.model(
             feed.unsqueeze(1),
             state.lens.unsqueeze(1),
             state.manager.begin_decode(state.slots),
         )
         state.step_logits = logits[:, 0]
-        state.lens = state.lens + 1
+        state.lens += 1
         state.steps += 1
         return next_ids
 
@@ -209,7 +233,7 @@ class LLM:
         if timing is not None:
             timing.decode_s += self._now() - prefill_end
             timing.decode_steps += state.steps
-        return state.outputs
+        return state.outputs()
 
     def generate_batch(
         self,
