@@ -31,7 +31,8 @@ class KVCacheView(Protocol):
         picks -- at least the longest sequence in the step, and possibly more if
         it would rather hand back a shape it has handed back before. Pass the
         result to Attention together with `attn_mask`, which says which of those
-        positions are real.
+        positions are real. The result may be a view of the backend's storage,
+        so read it within this step.
 
         The leading batch dimension is present exactly when the backend batches
         sequences. A view describes a single step, so call this once per layer
