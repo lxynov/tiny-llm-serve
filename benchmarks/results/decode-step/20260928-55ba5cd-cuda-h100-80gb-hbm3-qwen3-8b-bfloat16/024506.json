@@ -1,0 +1,244 @@
+{
+  "run_id": "024506",
+  "date": "2026-09-28T02:45:06+00:00",
+  "commit": "55ba5cdce6879267bb48d2b8d2c62e8da4a18b5d",
+  "dirty": false,
+  "model": "Qwen/Qwen3-8B",
+  "device": "cuda",
+  "environment": {
+    "platform": "Linux-6.8.0-106-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "torch": "2.13.0+cu130",
+    "cpu": "Intel(R) Xeon(R) Platinum 8480+",
+    "cpu_count": 224,
+    "torch_threads": 112,
+    "gpu": "NVIDIA H100 80GB HBM3",
+    "gpu_count": 1,
+    "gpu_memory_bytes": 85017493504,
+    "cuda": "13.0"
+  },
+  "benchmark": "decode-step",
+  "seed": 0,
+  "config": {
+    "dtype": "bfloat16",
+    "cells": [
+      "1x576",
+      "8x576",
+      "64x576",
+      "256x576",
+      "64x2048"
+    ],
+    "warmup": 10,
+    "steps": 30,
+    "repeats": 3
+  },
+  "weight_bytes": 16381470720,
+  "kv_bytes_per_token": 147456,
+  "cells": [
+    {
+      "cell": "1x576",
+      "batch": 1,
+      "kv_len": 576,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 0.022822216789548596,
+        "s_per_decode_step_min": 0.02280303817242384,
+        "s_per_decode_step_max": 0.022960563267891605,
+        "decode_bytes_read": 494127083520,
+        "bytes_per_decode_step": 16470902784.0,
+        "bytes_s": 721704772848.4828,
+        "mbu": 0.2154342605517859,
+        "kv_len_first_step": 532,
+        "kv_len_last_step": 621,
+        "peak_gpu_memory_allocated_bytes": 16596521472
+      },
+      "runs": [
+        {
+          "s": 0.6840911451727152,
+          "s_per_decode_step": 0.02280303817242384,
+          "decode_bytes_read": 493861662720,
+          "kv_len_first_step": 532,
+          "kv_len_last_step": 561
+        },
+        {
+          "s": 0.6888168980367482,
+          "s_per_decode_step": 0.022960563267891605,
+          "decode_bytes_read": 493994373120,
+          "kv_len_first_step": 562,
+          "kv_len_last_step": 591
+        },
+        {
+          "s": 0.6846665036864579,
+          "s_per_decode_step": 0.022822216789548596,
+          "decode_bytes_read": 494127083520,
+          "kv_len_first_step": 592,
+          "kv_len_last_step": 621
+        }
+      ]
+    },
+    {
+      "cell": "8x576",
+      "batch": 8,
+      "kv_len": 576,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 0.02279398262811204,
+        "s_per_decode_step_min": 0.022644794064884385,
+        "s_per_decode_step_max": 0.022865293935562175,
+        "decode_bytes_read": 512907816960,
+        "bytes_per_decode_step": 17096927232.0,
+        "bytes_s": 750063186014.4613,
+        "mbu": 0.2238994585117795,
+        "kv_len_first_step": 532,
+        "kv_len_last_step": 621,
+        "peak_gpu_memory_allocated_bytes": 17707559936
+      },
+      "runs": [
+        {
+          "s": 0.6793438219465315,
+          "s_per_decode_step": 0.022644794064884385,
+          "decode_bytes_read": 510784450560,
+          "kv_len_first_step": 532,
+          "kv_len_last_step": 561
+        },
+        {
+          "s": 0.6859588180668652,
+          "s_per_decode_step": 0.022865293935562175,
+          "decode_bytes_read": 511846133760,
+          "kv_len_first_step": 562,
+          "kv_len_last_step": 591
+        },
+        {
+          "s": 0.6838194788433611,
+          "s_per_decode_step": 0.02279398262811204,
+          "decode_bytes_read": 512907816960,
+          "kv_len_first_step": 592,
+          "kv_len_last_step": 621
+        }
+      ]
+    },
+    {
+      "cell": "64x576",
+      "batch": 64,
+      "kv_len": 576,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 0.02275419346988201,
+        "s_per_decode_step_min": 0.02267401086476942,
+        "s_per_decode_step_max": 0.022883702535182238,
+        "decode_bytes_read": 663153684480,
+        "bytes_per_decode_step": 22105122816.0,
+        "bytes_s": 971474679832.4829,
+        "mbu": 0.28999244174103966,
+        "kv_len_first_step": 532,
+        "kv_len_last_step": 621,
+        "peak_gpu_memory_allocated_bytes": 26427964416
+      },
+      "runs": [
+        {
+          "s": 0.6865110760554671,
+          "s_per_decode_step": 0.022883702535182238,
+          "decode_bytes_read": 646166753280,
+          "kv_len_first_step": 532,
+          "kv_len_last_step": 561
+        },
+        {
+          "s": 0.6802203259430826,
+          "s_per_decode_step": 0.02267401086476942,
+          "decode_bytes_read": 654660218880,
+          "kv_len_first_step": 562,
+          "kv_len_last_step": 591
+        },
+        {
+          "s": 0.6826258040964603,
+          "s_per_decode_step": 0.02275419346988201,
+          "decode_bytes_read": 663153684480,
+          "kv_len_first_step": 592,
+          "kv_len_last_step": 621
+        }
+      ]
+    },
+    {
+      "cell": "256x576",
+      "batch": 256,
+      "kv_len": 576,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 0.025287065965433914,
+        "s_per_decode_step_min": 0.025285045088579258,
+        "s_per_decode_step_max": 0.0253102106663088,
+        "decode_bytes_read": 1110334648320,
+        "bytes_per_decode_step": 37011154944.0,
+        "bytes_s": 1463639751428.3506,
+        "mbu": 0.4369073884860748,
+        "kv_len_first_step": 532,
+        "kv_len_last_step": 621,
+        "peak_gpu_memory_allocated_bytes": 56384924160
+      },
+      "runs": [
+        {
+          "s": 0.7586119789630175,
+          "s_per_decode_step": 0.025287065965433914,
+          "decode_bytes_read": 1110334648320,
+          "kv_len_first_step": 532,
+          "kv_len_last_step": 561
+        },
+        {
+          "s": 0.7585513526573777,
+          "s_per_decode_step": 0.025285045088579258,
+          "decode_bytes_read": 1144308510720,
+          "kv_len_first_step": 562,
+          "kv_len_last_step": 591
+        },
+        {
+          "s": 0.759306319989264,
+          "s_per_decode_step": 0.0253102106663088,
+          "decode_bytes_read": 1178282373120,
+          "kv_len_first_step": 592,
+          "kv_len_last_step": 621
+        }
+      ]
+    },
+    {
+      "cell": "64x2048",
+      "batch": 64,
+      "kv_len": 2048,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 0.02265156226543089,
+        "s_per_decode_step_min": 0.02264411924406886,
+        "s_per_decode_step_max": 0.02396742223451535,
+        "decode_bytes_read": 1079899729920,
+        "bytes_per_decode_step": 35996657664.0,
+        "bytes_s": 1589146798891.4563,
+        "mbu": 0.474372178773569,
+        "kv_len_first_step": 2004,
+        "kv_len_last_step": 2093,
+        "peak_gpu_memory_allocated_bytes": 51897297408
+      },
+      "runs": [
+        {
+          "s": 0.6793235773220658,
+          "s_per_decode_step": 0.02264411924406886,
+          "decode_bytes_read": 1062912798720,
+          "kv_len_first_step": 2004,
+          "kv_len_last_step": 2033
+        },
+        {
+          "s": 0.7190226670354605,
+          "s_per_decode_step": 0.02396742223451535,
+          "decode_bytes_read": 1071406264320,
+          "kv_len_first_step": 2034,
+          "kv_len_last_step": 2063
+        },
+        {
+          "s": 0.6795468679629266,
+          "s_per_decode_step": 0.02265156226543089,
+          "decode_bytes_read": 1079899729920,
+          "kv_len_first_step": 2064,
+          "kv_len_last_step": 2093
+        }
+      ]
+    }
+  ]
+}
