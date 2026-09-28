@@ -5,10 +5,19 @@ from tinymodel import HEAD_DIM, NUM_KV_HEADS, tiny_config
 from tiny_llm_serve.kv import PreallocatedKVManager
 
 
-def make_manager(num_slots=2, max_model_len=8) -> PreallocatedKVManager:
+def make_manager(
+    num_slots=2, max_model_len=8, kv_len_bucket=1
+) -> PreallocatedKVManager:
+    """A one-token bucket by default, so a test that is about slots and lengths
+    reads in them; the bucketing tests below set their own."""
     config = tiny_config(num_hidden_layers=1)
     return PreallocatedKVManager(
-        config, num_slots, max_model_len, device="cpu", dtype=torch.float32
+        config,
+        num_slots,
+        max_model_len,
+        device="cpu",
+        dtype=torch.float32,
+        kv_len_bucket=kv_len_bucket,
     )
 
 
@@ -122,3 +131,30 @@ def test_decode_requires_prefilled_slots():
 
     with pytest.raises(ValueError, match="unprefilled"):
         manager.begin_decode(slots)
+
+
+def test_decode_rounds_kv_len_up_to_a_bucket():
+    """Decode hands back a bucketed window so a run traces a handful of shapes
+    instead of one per step. The positions past the sequence are masked, so the
+    bucket costs bytes and not correctness."""
+    manager = make_manager(num_slots=1, max_model_len=16, kv_len_bucket=4)
+    slots = [manager.admit(2)]
+    manager.begin_prefill(slots, [2]).append(0, *kv(1, 2))
+
+    step = manager.begin_decode(slots)
+    k_out, _ = step.append(0, *kv(1, 1))
+
+    assert k_out.shape[1] == 4  # 3 cached tokens, rounded up to the bucket
+    assert step.attn_mask is not None
+    assert step.attn_mask.flatten().tolist() == [True, True, True, False]
+
+
+def test_the_bucket_never_reads_past_a_slot():
+    """A slot is the hard edge: the last bucket of a full slot is short."""
+    manager = make_manager(num_slots=1, max_model_len=6, kv_len_bucket=4)
+    slots = [manager.admit(4)]
+    manager.begin_prefill(slots, [4]).append(0, *kv(1, 4))
+
+    k_out, _ = manager.begin_decode(slots).append(0, *kv(1, 1))
+
+    assert k_out.shape[1] == 6  # 5 cached, bucketed to 8, capped by the slot
