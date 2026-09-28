@@ -54,7 +54,9 @@ class PreallocatedKVManager(KVManager):
         # Cached tokens per slot.
         self.cached_seq_lens = torch.zeros(num_slots, dtype=torch.long, device=device)
         self._cached_seq_lens_host = [0] * num_slots
-        self._free_slots = list(range(num_slots))
+        # Popped from the end, so slots go out in order: a batch admitted at
+        # once is then a contiguous run of the pool, which decode reads as a view.
+        self._free_slots = list(reversed(range(num_slots)))
         self._last_slot_ids = torch.zeros(0, dtype=torch.long, device=device)
         self._last_slot_ids_host: list[int] = []
 
@@ -101,7 +103,13 @@ class PreallocatedKVManager(KVManager):
         slot_ids = self._update_slot_ids_if_changed(slots)
         write_pos = self.cached_seq_lens[slot_ids]
         self.cached_seq_lens[slot_ids] = write_pos + 1
-        return _DecodeStep(self, slot_ids, write_pos, self._bucketed(kv_len))
+        return _DecodeStep(
+            self,
+            slot_ids,
+            _read_index(slots, slot_ids),
+            write_pos,
+            self._bucketed(kv_len),
+        )
 
     def _bucketed(self, kv_len: int) -> int:
         """Round a step's KV length up to the next bucket, capped by the slot."""
@@ -124,6 +132,24 @@ class PreallocatedKVManager(KVManager):
             self._last_slot_ids_host = list(slots)
             self._last_slot_ids = torch.tensor(slots, device=self.device)
         return self._last_slot_ids
+
+
+def _read_index(slots: list[int], slot_ids: torch.Tensor) -> slice | torch.Tensor:
+    """What decode indexes the pool with to read the batch's slots back.
+
+    Indexing with a tensor is advanced indexing, which copies every slot's
+    window, per layer, per step; a slice is a view. So a batch whose slots are
+    a contiguous run in order -- a static batch, admitted at once -- reads
+    through a slice, and any other batch gathers.
+
+    Shapes:
+        slot_ids: [batch] int64
+        ->        slice | [batch] int64
+    """
+    first = slots[0]
+    if slots == list(range(first, first + len(slots))):
+        return slice(first, first + len(slots))
+    return slot_ids
 
 
 class _PrefillStep:
@@ -166,13 +192,15 @@ class _DecodeStep:
     Returned k/v are cache slices spanning `kv_len`, a bucketed length at least
     as long as the longest sequence in the step; attn_mask marks which positions
     are real per row, hiding the bucket's padding, stale pad entries from the
-    prefill, and shorter sequences' tails alike.
+    prefill, and shorter sequences' tails alike. They are views of the cache
+    when `read_index` is a slice, and gathered copies otherwise.
 
     Shapes:
-        slot_ids:  [batch] int64 -- which pool slot each row reads and writes
-        write_pos: [batch] int64 -- the position this step's token lands on,
-                   i.e. each sequence's cached length before the step
-        attn_mask: [batch, 1, 1, kv_len] bool
+        slot_ids:   [batch] int64 -- which pool slot each row writes to
+        read_index: slice | [batch] int64 -- the same slots, for reading back
+        write_pos:  [batch] int64 -- the position this step's token lands on,
+                    i.e. each sequence's cached length before the step
+        attn_mask:  [batch, 1, 1, kv_len] bool
       where kv_len >= max(write_pos) + 1
     """
 
@@ -180,11 +208,13 @@ class _DecodeStep:
         self,
         manager: PreallocatedKVManager,
         slot_ids: torch.Tensor,
+        read_index: slice | torch.Tensor,
         write_pos: torch.Tensor,
         kv_len: int,
     ) -> None:
         self._manager = manager
         self._slot_ids = slot_ids
+        self._read_index = read_index
         self._write_pos = write_pos
         self._kv_len = kv_len
         keys_valid = torch.arange(kv_len, device=manager.device) <= write_pos[:, None]
@@ -209,6 +239,6 @@ class _DecodeStep:
         k_cache[self._slot_ids, self._write_pos] = k[:, 0]
         v_cache[self._slot_ids, self._write_pos] = v[:, 0]
         return (
-            k_cache[self._slot_ids, : self._kv_len],
-            v_cache[self._slot_ids, : self._kv_len],
+            k_cache[self._read_index, : self._kv_len],
+            v_cache[self._read_index, : self._kv_len],
         )

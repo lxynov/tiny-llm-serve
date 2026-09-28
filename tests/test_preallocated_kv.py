@@ -32,7 +32,7 @@ def test_admission_exhausts_slots():
     assert manager.can_admit(4)
     first, second = manager.admit(4), manager.admit(4)
 
-    assert {first, second} == {0, 1}
+    assert [first, second] == [0, 1]  # in order, so a batch is a run of the pool
     assert not manager.can_admit(4)
     with pytest.raises(ValueError, match="cannot admit"):
         manager.admit(4)
@@ -105,6 +105,41 @@ def test_decode_appends_at_each_sequence_length():
         [True, True, True, True],
     ]
     assert manager.cached_seq_lens[slots].tolist() == [3, 4]
+
+
+def test_decode_reads_a_run_of_slots_as_a_view():
+    """Slots admitted together are a contiguous run of the pool, so decode can
+    slice them out instead of gathering a copy per layer."""
+    manager = make_manager(num_slots=3)
+    manager.admit(2)
+    slots = [manager.admit(2), manager.admit(3)]  # 1 and 2, not from 0
+    manager.begin_prefill(slots, [2, 3]).append(0, *kv(2, 3))
+
+    k_out, v_out = manager.begin_decode(slots).append(0, *kv(2, 1))
+
+    assert k_out._base is manager.k_cache[0]
+    assert v_out._base is manager.v_cache[0]
+    assert torch.equal(k_out, manager.k_cache[0][1:3, :4])
+
+
+def test_decode_gathers_slots_out_of_order():
+    """Any other batch still reads right, through a copy: row i is slots[i]."""
+    torch.manual_seed(0)
+    manager = make_manager()
+    slots = [manager.admit(2), manager.admit(3)][::-1]
+    manager.begin_prefill(slots, [3, 2]).append(0, *kv(2, 3))
+
+    step = manager.begin_decode(slots)
+    k_out, v_out = step.append(0, *kv(2, 1))
+
+    assert k_out._base is None and v_out._base is None
+    assert torch.equal(k_out[0], manager.k_cache[0][1, :4])
+    assert torch.equal(v_out[1], manager.v_cache[0][0, :4])
+    assert step.attn_mask is not None
+    assert step.attn_mask.flatten(0, 2).tolist() == [
+        [True, True, True, True],
+        [True, True, True, False],
+    ]
 
 
 def test_decode_rejects_multi_token_input():
