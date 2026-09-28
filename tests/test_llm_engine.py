@@ -77,8 +77,8 @@ def resolve_prompt(tokenizer, prompt: str) -> str:
 
 def greedy_parity(
     model_path: str, device: str, dtype: torch.dtype, prompt: str
-) -> tuple[list[int], list[int]]:
-    """Greedy-decode `prompt` with both engines; return (ours, HF's) token ids."""
+) -> tuple[list[int], list[int], list[int]]:
+    """Greedy-decode `prompt` with both engines; return its ids and (ours, HF's)."""
     llm = load_llm(model_path, device, dtype)
     text = resolve_prompt(llm.tokenizer, prompt)
     ours = generate_alone(llm, text, greedy(PARITY_MAX_TOKENS))
@@ -100,7 +100,7 @@ def greedy_parity(
         )
     if ref and ref[-1] == eos:
         ref = ref[:-1]  # ours excludes the EOS token
-    return ours, ref
+    return input_ids[0].tolist(), ours, ref
 
 
 def common_prefix_len(a: list[int], b: list[int]) -> int:
@@ -123,20 +123,69 @@ def divergence_report(model_path: str, ours: list[int], ref: list[int]) -> str:
     )
 
 
+# How far apart two logits can be and still be a coin toss at the model's
+# dtype. Decode reads its KV out to a bucketed length, so it sums the same
+# scores in a different order than an exact-length reference does, and a few
+# ulps of drift is enough to reorder a near-tie. In fp32 this allows ~1e-5 on a
+# logit of 15, so the assertion there stays exact in all but name.
+TIE_ULPS = 4
+
+
+def tie_ulps(
+    llm: LLM, prompt_ids: list[int], dtype: torch.dtype, ours: list[int], ref: list[int]
+) -> float | None:
+    """At the first token two decodings disagree on, how far our own pick sat
+    above the one the other made, in ulps -- or None if they never disagree.
+
+    The logits are replayed through our decode loop rather than read off a
+    prefill of the shared prefix: the two take different paths through
+    attention, and the question is what *this* loop was torn between.
+    """
+    step = common_prefix_len(ours, ref)
+    if step == len(ours) == len(ref):
+        return None
+    # Whichever run stopped first picked EOS where the other kept going.
+    eos = llm.tokenizer.eos_token_id
+    mine = ours[step] if step < len(ours) else eos
+    theirs = ref[step] if step < len(ref) else eos
+    # Sized as greedy_parity's run was: the slot caps the bucketed KV window, and
+    # a different window is different arithmetic, not a replay.
+    state = llm.prefill_batch(
+        [prompt_ids],
+        greedy(step + 1, ignore_eos=True),
+        max_model_len=len(prompt_ids) + PARITY_MAX_TOKENS,
+    )
+    for _ in range(step):
+        llm.decode_step(state)
+    logits = state.step_logits[0].float()
+    assert int(logits.argmax()) == mine, "the replay no longer picks our token"
+    top = logits.max()
+    return ((top - logits[theirs]) / (torch.finfo(dtype).eps * top.abs())).item()
+
+
 @backends("all")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=str)
 @pytest.mark.parametrize("prompt", PARITY_PROMPTS)
 def test_parity_with_hf_greedy(qwen3_path, device, prompt, dtype):
-    """Greedy decoding matches HF token for token, in both dtypes.
+    """Greedy decoding matches HF token for token, except where this dtype
+    cannot tell the two candidates apart.
 
-    bfloat16 is the tighter of the two: a near-tie can flip a token and send
-    the two decodings apart for good. So read a failure that shows up only in
-    bf16 as a question -- which token flipped, and was it close? -- before
-    assuming a bug. The report on the assertion answers that.
+    Ours and HF's are not the same arithmetic -- decode sums a bucketed KV
+    window in its own order, and the fused kernels ahead will differ again --
+    so the two agree exactly only as far as the dtype resolves. In fp32 that is
+    far below a token flip. In bf16 a single ulp can reorder a near-tie, and
+    the question a divergence raises is whether the token HF picked was one
+    ours was already torn over. The assertion answers it in ulps.
     """
-    ours, ref = greedy_parity(str(qwen3_path), device, dtype, prompt)
+    prompt_ids, ours, ref = greedy_parity(str(qwen3_path), device, dtype, prompt)
+    llm = load_llm(str(qwen3_path), device, dtype)
 
-    assert ours == ref, divergence_report(str(qwen3_path), ours, ref)
+    ulps = tie_ulps(llm, prompt_ids, dtype, ours, ref)
+
+    assert ulps is None or ulps <= TIE_ULPS, (
+        f"{divergence_report(str(qwen3_path), ours, ref)}\n"
+        f"  HF's token sat {ulps:.1f} ulps below ours, past the {TIE_ULPS} a tie gets"
+    )
 
 
 @backends("cpu")
@@ -257,6 +306,31 @@ def test_hand_driven_step_loop_matches_generate(tiny_checkpoint_path, device):
     # A wave's first token falls out of the prefill logits, so the longest
     # budget in the batch costs one fewer step than it produces tokens.
     assert state.steps == max(budgets) - 1
+
+
+@backends("cpu")
+def test_decode_steps_never_change_shape(tiny_checkpoint_path, device, monkeypatch):
+    """Nothing a step allocates may grow with the step count: a shape that
+    moves every step pushes torch.compile onto dynamic shapes and makes a CUDA
+    graph re-record every step, which is most of what de-syncing the loop
+    bought. The KV window moves in bucket-sized jumps, not token-sized ones."""
+    llm = load_llm(str(tiny_checkpoint_path), device)
+    state = llm.prefill_batch(TINY_PROMPTS, greedy(12))
+    begin_decode, kv_lens, seen = state.manager.begin_decode, set(), set()
+
+    def spy(slots: list[int]):
+        view = begin_decode(slots)
+        assert view.attn_mask is not None
+        kv_lens.add(view.attn_mask.shape[-1])
+        return view
+
+    monkeypatch.setattr(state.manager, "begin_decode", spy)
+    while not state.done:
+        llm.decode_step(state)
+        seen.add(tuple(state.seen_ids.shape))
+
+    assert state.steps > 1
+    assert len(kv_lens) == 1 and len(seen) == 1
 
 
 @backends("all")

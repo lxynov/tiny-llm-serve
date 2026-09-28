@@ -13,6 +13,8 @@ import torch
 from tiny_llm_serve.config import ModelConfig
 from tiny_llm_serve.kv.base import KVManager
 
+KV_LEN_BUCKET = 128
+
 
 class PreallocatedKVManager(KVManager):
     """A fixed pool of sequence slots, each reserving `max_model_len` tokens of
@@ -35,8 +37,10 @@ class PreallocatedKVManager(KVManager):
         max_model_len: int,
         device: str,
         dtype: torch.dtype,
+        kv_len_bucket: int = KV_LEN_BUCKET,
     ) -> None:
         self.max_model_len = max_model_len
+        self.kv_len_bucket = kv_len_bucket
         self.device = device
         shape = (num_slots, max_model_len, config.num_key_value_heads, config.head_dim)
         self.k_cache = [
@@ -97,7 +101,12 @@ class PreallocatedKVManager(KVManager):
         slot_ids = self._update_slot_ids_if_changed(slots)
         write_pos = self.cached_seq_lens[slot_ids]
         self.cached_seq_lens[slot_ids] = write_pos + 1
-        return _DecodeStep(self, slot_ids, write_pos, kv_len)
+        return _DecodeStep(self, slot_ids, write_pos, self._bucketed(kv_len))
+
+    def _bucketed(self, kv_len: int) -> int:
+        """Round a step's KV length up to the next bucket, capped by the slot."""
+        bucket = self.kv_len_bucket
+        return min((kv_len + bucket - 1) // bucket * bucket, self.max_model_len)
 
     def _update_slot_ids_if_changed(self, slots: list[int]) -> torch.Tensor:
         """The device copy of `slots`, rebuilt only when the batch changes.
@@ -154,16 +163,17 @@ class _PrefillStep:
 class _DecodeStep:
     """Appends one token per sequence at each sequence's current length.
 
-    Returned k/v are cache slices padded to the longest sequence in the step;
-    attn_mask marks which positions are real per row, hiding both stale pad
-    entries and shorter sequences' tails.
+    Returned k/v are cache slices spanning `kv_len`, a bucketed length at least
+    as long as the longest sequence in the step; attn_mask marks which positions
+    are real per row, hiding the bucket's padding, stale pad entries from the
+    prefill, and shorter sequences' tails alike.
 
     Shapes:
         slot_ids:  [batch] int64 -- which pool slot each row reads and writes
         write_pos: [batch] int64 -- the position this step's token lands on,
                    i.e. each sequence's cached length before the step
         attn_mask: [batch, 1, 1, kv_len] bool
-      where kv_len == max(write_pos) + 1
+      where kv_len >= max(write_pos) + 1
     """
 
     def __init__(
@@ -190,7 +200,7 @@ class _DecodeStep:
         Shapes:
             k, v:    [batch, 1, num_kv_heads, head_dim]
             -> k, v: [batch, kv_len, num_kv_heads, head_dim]
-          where kv_len is the longest sequence in the step, this token included
+          where kv_len is the step's bucketed window, this token included
         """
         if k.shape[1] != 1:
             raise ValueError(f"decode appends one token per sequence, got {k.shape[1]}")

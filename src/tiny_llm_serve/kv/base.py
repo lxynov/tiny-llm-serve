@@ -27,9 +27,11 @@ class KVCacheView(Protocol):
         self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Store one layer's k/v for this step and return the k/v attention
-        should read over: cached positions included, padded to the longest
-        sequence in the step. Pass the result to Attention together with
-        `attn_mask`, which says which of those positions are real.
+        should read over: cached positions included, out to a kv_len the backend
+        picks -- at least the longest sequence in the step, and possibly more if
+        it would rather hand back a shape it has handed back before. Pass the
+        result to Attention together with `attn_mask`, which says which of those
+        positions are real.
 
         The leading batch dimension is present exactly when the backend batches
         sequences. A view describes a single step, so call this once per layer
