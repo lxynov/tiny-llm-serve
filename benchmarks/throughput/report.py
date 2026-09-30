@@ -7,9 +7,9 @@ in none of them -- how much of the curve each batch size bought, and how much
 of the batch was decoding sequences that had already finished.
 
 This module joins the index to the records, derives those two, and prints a
-table per workload. It also checks the thing the README's first rule asks of a
-comparison and no single record can confirm: that every trial in the folder ran
-the same commit on the same machine. A commit made while the sweep runs, or an
+table per workload. It also checks the thing docs/benchmarks.md's first rule
+asks of a comparison and no single record can confirm: that every trial in the
+folder ran the same commit on the same machine. A commit made while the sweep runs, or an
 edit to the tree, reaches every trial after it -- and the curve bends somewhere
 the engine did not change.
 

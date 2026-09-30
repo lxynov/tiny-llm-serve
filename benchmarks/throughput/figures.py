@@ -17,7 +17,7 @@ Three consequences follow from "no accent colour", and they are the whole design
     simply not carried by colour at all.
   * The page has two themes and a toggle, so a baked-in figure has to be baked
     twice. `plot` writes a light and a dark variant by default; swapping them is
-    the page's problem, and the README carries the rule that does it.
+    the page's problem, and site/README.md carries the rule that does it.
   * Text sizes are chosen in *displayed* pixels, not points. A figure rendered
     at 200 dpi and shown across the page's 41rem measure is halved on the way,
     so a 13pt title lands at roughly the 18px of an `h3` and a 8.5pt tick label

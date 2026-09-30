@@ -1,0 +1,265 @@
+{
+  "run_id": "203321",
+  "date": "2026-09-26T20:33:21+00:00",
+  "commit": "cd55c08bcbe4376b8de784f216d1e8a3b5efac2b",
+  "dirty": false,
+  "model": "Qwen/Qwen3-8B",
+  "device": "mps",
+  "environment": {
+    "platform": "macOS-26.7.1-arm64-arm-64bit",
+    "python": "3.12.12",
+    "torch": "2.13.0",
+    "cpu": "Apple M4 Max",
+    "cpu_count": 16,
+    "torch_threads": 12
+  },
+  "benchmark": "decode-step",
+  "seed": 0,
+  "config": {
+    "dtype": "bfloat16",
+    "cells": [
+      "1x576",
+      "8x576",
+      "64x576",
+      "256x576",
+      "64x2048"
+    ],
+    "warmup": 10,
+    "steps": 30,
+    "repeats": 3
+  },
+  "weight_bytes": 16381470720,
+  "kv_bytes_per_token": 147456,
+  "cells": [
+    {
+      "cell": "1x576",
+      "batch": 1,
+      "kv_len": 576,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 0.04718202636674202,
+        "host_s_per_decode_step": 0.04592275553344128,
+        "host_share": 0.9733103698532884,
+        "s_per_decode_step_min": 0.046926773599989244,
+        "s_per_decode_step_max": 0.04723395973317868,
+        "decode_bytes_read": 494104965120,
+        "bytes_per_decode_step": 16470165504.0,
+        "bytes_s": 349077112033.696,
+        "mbu": null,
+        "kv_len_first_step": 587,
+        "kv_len_last_step": 676,
+        "peak_gpu_memory_allocated_bytes": null
+      },
+      "runs": [
+        {
+          "s": 1.4154607910022605,
+          "host_s": 1.3776826660032384,
+          "s_per_decode_step": 0.04718202636674202,
+          "decode_bytes_read": 494104965120,
+          "kv_len_first_step": 587,
+          "kv_len_last_step": 616
+        },
+        {
+          "s": 1.4078032079996774,
+          "host_s": 1.3699689579952974,
+          "s_per_decode_step": 0.046926773599989244,
+          "decode_bytes_read": 494237675520,
+          "kv_len_first_step": 617,
+          "kv_len_last_step": 646
+        },
+        {
+          "s": 1.4170187919953605,
+          "host_s": 1.3790999589982675,
+          "s_per_decode_step": 0.04723395973317868,
+          "decode_bytes_read": 494370385920,
+          "kv_len_first_step": 647,
+          "kv_len_last_step": 676
+        }
+      ]
+    },
+    {
+      "cell": "8x576",
+      "batch": 8,
+      "kv_len": 576,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 0.2682809263666665,
+        "host_s_per_decode_step": 0.2596643110999139,
+        "host_share": 0.9678821175122377,
+        "s_per_decode_step_min": 0.2672743277667905,
+        "s_per_decode_step_max": 0.2689324639000309,
+        "decode_bytes_read": 514854236160,
+        "bytes_per_decode_step": 17161807872.0,
+        "bytes_s": 63969541571.30244,
+        "mbu": null,
+        "kv_len_first_step": 587,
+        "kv_len_last_step": 676,
+        "peak_gpu_memory_allocated_bytes": null
+      },
+      "runs": [
+        {
+          "s": 8.018229833003716,
+          "host_s": 7.761541958010639,
+          "s_per_decode_step": 0.2672743277667905,
+          "decode_bytes_read": 512730869760,
+          "kv_len_first_step": 587,
+          "kv_len_last_step": 616
+        },
+        {
+          "s": 8.067973917000927,
+          "host_s": 7.810345542005962,
+          "s_per_decode_step": 0.2689324639000309,
+          "decode_bytes_read": 513792552960,
+          "kv_len_first_step": 617,
+          "kv_len_last_step": 646
+        },
+        {
+          "s": 8.048427790999995,
+          "host_s": 7.789929332997417,
+          "s_per_decode_step": 0.2682809263666665,
+          "decode_bytes_read": 514854236160,
+          "kv_len_first_step": 647,
+          "kv_len_last_step": 676
+        }
+      ]
+    },
+    {
+      "cell": "64x576",
+      "batch": 64,
+      "kv_len": 576,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 0.2767890735999875,
+        "host_s_per_decode_step": 0.26775094443340397,
+        "host_share": 0.9673465102901955,
+        "s_per_decode_step_min": 0.2655629611001738,
+        "s_per_decode_step_max": 0.2835090930335961,
+        "decode_bytes_read": 670231572480,
+        "bytes_per_decode_step": 22341052416.0,
+        "bytes_s": 80715080712.64056,
+        "mbu": null,
+        "kv_len_first_step": 587,
+        "kv_len_last_step": 676,
+        "peak_gpu_memory_allocated_bytes": null
+      },
+      "runs": [
+        {
+          "s": 7.966888833005214,
+          "host_s": 7.715211125003407,
+          "s_per_decode_step": 0.2655629611001738,
+          "decode_bytes_read": 661738106880,
+          "kv_len_first_step": 587,
+          "kv_len_last_step": 616
+        },
+        {
+          "s": 8.303672207999625,
+          "host_s": 8.03252833300212,
+          "s_per_decode_step": 0.2767890735999875,
+          "decode_bytes_read": 670231572480,
+          "kv_len_first_step": 617,
+          "kv_len_last_step": 646
+        },
+        {
+          "s": 8.505272791007883,
+          "host_s": 8.227587375004077,
+          "s_per_decode_step": 0.2835090930335961,
+          "decode_bytes_read": 678725038080,
+          "kv_len_first_step": 647,
+          "kv_len_last_step": 676
+        }
+      ]
+    },
+    {
+      "cell": "256x576",
+      "batch": 256,
+      "kv_len": 576,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 1.247171220833358,
+        "host_s_per_decode_step": 1.200498522199632,
+        "host_share": 0.9625771523155102,
+        "s_per_decode_step_min": 1.158886879166918,
+        "s_per_decode_step_max": 1.3709205555331816,
+        "decode_bytes_read": 1240567787520,
+        "bytes_per_decode_step": 41352259584.0,
+        "bytes_s": 33156842375.153973,
+        "mbu": null,
+        "kv_len_first_step": 587,
+        "kv_len_last_step": 676,
+        "peak_gpu_memory_allocated_bytes": null
+      },
+      "runs": [
+        {
+          "s": 34.76660637500754,
+          "host_s": 33.670123292002245,
+          "s_per_decode_step": 1.158886879166918,
+          "decode_bytes_read": 1172620062720,
+          "kv_len_first_step": 587,
+          "kv_len_last_step": 616
+        },
+        {
+          "s": 41.12761666599545,
+          "host_s": 39.93526116599969,
+          "s_per_decode_step": 1.3709205555331816,
+          "decode_bytes_read": 1206593925120,
+          "kv_len_first_step": 617,
+          "kv_len_last_step": 646
+        },
+        {
+          "s": 37.41513662500074,
+          "host_s": 36.014955665988964,
+          "s_per_decode_step": 1.247171220833358,
+          "decode_bytes_read": 1240567787520,
+          "kv_len_first_step": 647,
+          "kv_len_last_step": 676
+        }
+      ]
+    },
+    {
+      "cell": "64x2048",
+      "batch": 64,
+      "kv_len": 2048,
+      "status": "ok",
+      "metrics": {
+        "s_per_decode_step": 2.0821807013999205,
+        "host_s_per_decode_step": 2.0599410111331964,
+        "host_share": 0.9893190392881023,
+        "s_per_decode_step_min": 1.9360622680333714,
+        "s_per_decode_step_max": 2.2958549263998673,
+        "decode_bytes_read": 1078484152320,
+        "bytes_per_decode_step": 35949471744.0,
+        "bytes_s": 17265298693.734867,
+        "mbu": null,
+        "kv_len_first_step": 2059,
+        "kv_len_last_step": 2148,
+        "peak_gpu_memory_allocated_bytes": null
+      },
+      "runs": [
+        {
+          "s": 62.465421041997615,
+          "host_s": 61.79823033399589,
+          "s_per_decode_step": 2.0821807013999205,
+          "decode_bytes_read": 1078484152320,
+          "kv_len_first_step": 2059,
+          "kv_len_last_step": 2088
+        },
+        {
+          "s": 58.081868041001144,
+          "host_s": 57.38404345799063,
+          "s_per_decode_step": 1.9360622680333714,
+          "decode_bytes_read": 1086977617920,
+          "kv_len_first_step": 2089,
+          "kv_len_last_step": 2118
+        },
+        {
+          "s": 68.87564779199602,
+          "host_s": 66.05791879199387,
+          "s_per_decode_step": 2.2958549263998673,
+          "decode_bytes_read": 1095471083520,
+          "kv_len_first_step": 2119,
+          "kv_len_last_step": 2148
+        }
+      ]
+    }
+  ]
+}
