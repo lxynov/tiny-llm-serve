@@ -1,9 +1,9 @@
 """Offline throughput benchmark.
 
 Runs a named workload through the engine and writes a JSON record to
-benchmarks/results/throughput/, following the protocol in the README: pre-tokenized
-prompts, ignore_eos so output lengths are exact, and the wall time of one
-full pass over the workload.
+benchmarks/results/throughput/, following the protocol in docs/benchmarks.md:
+pre-tokenized prompts, ignore_eos so output lengths are exact, and the wall
+time of one full pass over the workload.
 
 A trial that runs out of memory still writes a record -- `"status": "oom"`
 with no metrics -- because the batch size that did not fit is the sweep's
