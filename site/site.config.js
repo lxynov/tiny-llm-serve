@@ -3,7 +3,7 @@
 export default {
   // ---- Identity -----------------------------------------------------------
   title: 'journey of building tiny-llm-serve',
-  tagline: 'a fully human-written logbook in plain and casual English',
+  // tagline: 'a fully human-written logbook in plain and casual English',
   description:
     'A tiny LLM inference and serving engine built from scratch in Python and PyTorch: KV caching, paged attention, continuous batching, and the benchmarks behind each step.',
 

@@ -14,7 +14,7 @@ Please visit <https://lxynov.github.io/tiny-llm-serve/> for the journey of this 
 - [x] Offline throughput benchmark: seeded workloads drained at each batch size of a sweep
 - [x] Static batching with a preallocated KV cache, baselined on an H100 ([write-up](https://lxynov.github.io/tiny-llm-serve/posts/basic-static-batching/))
 - [x] Decode-step microbenchmark and quick wins: fewer host syncs, `kv_len` rounded up to a
-  bucket, KV read as a view
+  bucket, KV read as a view ([write-up](https://lxynov.github.io/tiny-llm-serve/posts/decode-step-quick-wins/))
 - [ ] Decode attention on a length vector, then a custom Triton kernel
 - [ ] CUDA graphs for decode
 - [ ] Online benchmark: requests arrive over time, measuring latency (TTFT, TPOT)
